@@ -17,6 +17,7 @@ try:
         QButtonGroup,
         QComboBox,
         QDialog,
+        QColorDialog,
         QFileDialog,
         QGridLayout,
         QGroupBox,
@@ -44,7 +45,10 @@ try:
     POLICY_EXPANDING = QSizePolicy.Policy.Expanding
     ITEM_USER_CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable
     ITEM_EDITABLE = Qt.ItemFlag.ItemIsEditable
+    ITEM_SELECTABLE = Qt.ItemFlag.ItemIsSelectable
     DIALOG_ACCEPTED = QDialog.DialogCode.Accepted
+    COLOR_DIALOG_DONT_USE_NATIVE = QColorDialog.ColorDialogOption.DontUseNativeDialog
+    COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ColorDialogOption.ShowAlphaChannel
 except ImportError:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QColor, QIcon, QPixmap
@@ -54,6 +58,7 @@ except ImportError:
         QButtonGroup,
         QComboBox,
         QDialog,
+        QColorDialog,
         QFileDialog,
         QGridLayout,
         QGroupBox,
@@ -81,10 +86,31 @@ except ImportError:
     POLICY_EXPANDING = QSizePolicy.Expanding
     ITEM_USER_CHECKABLE = Qt.ItemIsUserCheckable
     ITEM_EDITABLE = Qt.ItemIsEditable
+    ITEM_SELECTABLE = Qt.ItemIsSelectable
     DIALOG_ACCEPTED = QDialog.Accepted
+    COLOR_DIALOG_DONT_USE_NATIVE = QColorDialog.DontUseNativeDialog
+    COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ShowAlphaChannel
 
 from matplotlib.figure import Figure
 from matplotlib.widgets import SpanSelector
+
+
+FIXED_SIGNAL_COLORS = [
+    QColor("#e53935"),  # красный
+    QColor("#1e88e5"),  # синий
+    QColor("#43a047"),  # зеленый
+    QColor("#8e24aa"),  # фиолетовый
+    QColor("#fb8c00"),  # оранжевый
+    QColor("#6d4c41"),  # коричневый
+    QColor("#00acc1"),  # голубой
+]
+
+STANDARD_PALETTE_COLORS = [
+    QColor("#e53935"), QColor("#1e88e5"), QColor("#43a047"), QColor("#8e24aa"), QColor("#fb8c00"),
+    QColor("#6d4c41"), QColor("#00acc1"), QColor("#fdd835"), QColor("#3949ab"), QColor("#00897b"),
+    QColor("#c2185b"), QColor("#7cb342"), QColor("#5e35b1"), QColor("#546e7a"), QColor("#f4511e"),
+    QColor("#039be5"), QColor("#8d6e63"), QColor("#d81b60"), QColor("#9e9d24"), QColor("#5d4037"),
+]
 
 
 @dataclass
@@ -128,6 +154,12 @@ def downsample_signal(sig: np.ndarray, n_points: int) -> np.ndarray:
 
 def random_qcolor() -> QColor:
     return QColor.fromHsv(random.randint(0, 359), 220, 220)
+
+
+def default_signal_color(index: int) -> QColor:
+    if 0 <= index < len(FIXED_SIGNAL_COLORS):
+        return QColor(FIXED_SIGNAL_COLORS[index])
+    return random_qcolor()
 
 
 class ColorSelectDialog(QDialog):
@@ -180,6 +212,17 @@ class PreviewDialog(QDialog):
         layout.addWidget(btn_ok)
 
 
+class SignalPaletteDialog(QColorDialog):
+    def __init__(self, initial_color: QColor, parent: Optional[QWidget] = None):
+        super().__init__(initial_color, parent)
+        self.setWindowTitle("Выбор цвета сигнала")
+        self.setOption(COLOR_DIALOG_DONT_USE_NATIVE, True)
+        self.setOption(COLOR_DIALOG_SHOW_ALPHA, False)
+
+        for idx, color in enumerate(STANDARD_PALETTE_COLORS):
+            self.setStandardColor(idx, color)
+
+
 class MplView(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -211,6 +254,7 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[np.ndarray] = []
         self.is_table_refresh = False
         self.level_slider_active = False
+        self.show_components_active = False
 
         self.spectrum_freq: Optional[np.ndarray] = None
         self.spectrum_amp: Optional[np.ndarray] = None
@@ -252,6 +296,7 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.itemSelectionChanged.connect(self._update_buttons_state)
         self.table.itemChanged.connect(self._on_table_item_changed)
+        self.table.cellClicked.connect(self._on_table_cell_clicked)
         root.addWidget(self.table)
 
         params_box = QGroupBox("Параметры развертки")
@@ -350,7 +395,8 @@ class MainWindow(QMainWindow):
         root.addWidget(self.sum_plot)
 
         self.btn_show_components = QPushButton("Показать исходные сигналы")
-        self.btn_show_components.clicked.connect(lambda: self._plot_sum(with_components=True))
+        self.btn_show_components.setCheckable(True)
+        self.btn_show_components.toggled.connect(self._toggle_show_components)
         root.addWidget(self.btn_show_components)
 
         return box
@@ -448,12 +494,26 @@ class MainWindow(QMainWindow):
         self.btn_undo.setEnabled(len(self.undo_stack) > 0)
         self.btn_save.setEnabled(has_edit and len(self.undo_stack) > 0)
 
-        self.btn_show_components.setEnabled(self.summed_signal is not None)
-        self.btn_calc_spec.setEnabled(self.summed_signal is not None)
+        has_sum = self.summed_signal is not None
+        if not has_sum:
+            self.show_components_active = False
+            self.btn_show_components.blockSignals(True)
+            self.btn_show_components.setChecked(False)
+            self.btn_show_components.blockSignals(False)
+
+        self.btn_show_components.setEnabled(has_sum)
+        self._update_show_components_button_style()
+        self.btn_calc_spec.setEnabled(has_sum)
 
         spectrum_ready = self.spectrum_amp is not None
         for b in [self.btn_amp, self.btn_phase, self.btn_real, self.btn_imag]:
             b.setEnabled(spectrum_ready)
+
+    def _update_show_components_button_style(self):
+        if self.show_components_active and self.summed_signal is not None:
+            self.btn_show_components.setStyleSheet("background-color: #87CEFA;")
+        else:
+            self.btn_show_components.setStyleSheet("")
 
     def _refresh_table(self):
         self.is_table_refresh = True
@@ -472,7 +532,7 @@ class MainWindow(QMainWindow):
             self.table.setItem(i, 1, name_item)
 
             color_item = QTableWidgetItem(" ")
-            color_item.setFlags(color_item.flags() & ~ITEM_EDITABLE)
+            color_item.setFlags(color_item.flags() & ~(ITEM_EDITABLE | ITEM_SELECTABLE))
             color_item.setBackground(sig.color)
             self.table.setItem(i, 2, color_item)
 
@@ -505,6 +565,33 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(self.signals) and col == 1:
             self.signals[row].name = item.text().strip() or f"Сигнал {row + 1}"
         self._update_buttons_state()
+
+    def _on_table_cell_clicked(self, row: int, col: int):
+        if col != 2:
+            return
+        self._pick_signal_color(row)
+
+    def _pick_signal_color(self, row: int):
+        if row < 0 or row >= len(self.signals):
+            return
+
+        current = self.signals[row].color
+        dialog = SignalPaletteDialog(current, self)
+        if dialog.exec() != DIALOG_ACCEPTED:
+            return
+
+        selected = dialog.selectedColor()
+        if not selected.isValid():
+            return
+
+        self.signals[row].color = selected
+        self._refresh_table()
+
+        if self.current_edit_index == row and self.edit_values is not None:
+            self._plot_edit_signal()
+
+        if self.summed_signal is not None:
+            self._plot_sum()
 
     def _delete_signal(self, row: int):
         if row < 0 or row >= len(self.signals):
@@ -579,9 +666,10 @@ class MainWindow(QMainWindow):
         if preview.exec() != DIALOG_ACCEPTED:
             return
 
+        signal_index = len(self.signals)
         item = SignalItem(
-            name=f"Сигнал {len(self.signals) + 1}",
-            color=random_qcolor(),
+            name=f"Сигнал {signal_index + 1}",
+            color=default_signal_color(signal_index),
             values=sig_resampled.copy(),
         )
         self.signals.append(item)
@@ -599,6 +687,7 @@ class MainWindow(QMainWindow):
         self.btn_zero.setChecked(False)
         self.btn_level.setChecked(False)
         self.span_selector.set_active(False)
+        self._clear_span_selection()
         self.level_slider.hide()
         self.level_slider.setValue(0)
 
@@ -624,19 +713,30 @@ class MainWindow(QMainWindow):
         self.edit_plot.ax.set_xlabel("t, сек")
         self.edit_plot.canvas.draw_idle()
 
+    def _clear_span_selection(self):
+        if hasattr(self.span_selector, "clear"):
+            self.span_selector.clear()
+        elif hasattr(self.span_selector, "extents"):
+            self.span_selector.extents = (0.0, 0.0)
+        self.edit_plot.canvas.draw_idle()
+
     def _toggle_zero_mode(self):
         active = self.btn_zero.isChecked() and self.edit_values is not None
         if active:
             self.btn_level.setChecked(False)
             self.level_slider.hide()
             self.level_slider_active = False
+        else:
+            self._clear_span_selection()
         self.span_selector.set_active(active)
+
 
     def _toggle_level_mode(self):
         active = self.btn_level.isChecked() and self.edit_values is not None
         if active:
             self.btn_zero.setChecked(False)
             self.span_selector.set_active(False)
+            self._clear_span_selection()
             self.level_slider_active = True
             self.level_slider.setValue(0)
             self.level_slider.show()
@@ -644,6 +744,7 @@ class MainWindow(QMainWindow):
         else:
             self.level_slider_active = False
             self.level_slider.hide()
+
 
     def _on_span_selected(self, x_min: float, x_max: float):
         if not self.btn_zero.isChecked() or self.edit_values is None:
@@ -714,10 +815,22 @@ class MainWindow(QMainWindow):
             base = base + self.signals[r].values
 
         self.summed_signal = base
-        self._plot_sum(with_components=False)
+        self.show_components_active = False
+        self.btn_show_components.blockSignals(True)
+        self.btn_show_components.setChecked(False)
+        self.btn_show_components.blockSignals(False)
+        self._update_show_components_button_style()
+        self._plot_sum()
         self._update_buttons_state()
 
-    def _plot_sum(self, with_components: bool):
+    def _toggle_show_components(self, checked: bool):
+        if self.summed_signal is None:
+            return
+        self.show_components_active = checked
+        self._update_show_components_button_style()
+        self._plot_sum()
+
+    def _plot_sum(self):
         self.sum_plot.ax.clear()
         if self.summed_signal is None:
             self.sum_plot.canvas.draw_idle()
@@ -729,7 +842,7 @@ class MainWindow(QMainWindow):
 
         x = build_time_axis(t_half, len(self.summed_signal))
 
-        if with_components:
+        if self.show_components_active:
             for r in self._checked_rows():
                 sig = self.signals[r]
                 self.sum_plot.ax.plot(x, sig.values, color=sig.color.name(), linewidth=1.2, alpha=0.8, label=sig.name)
@@ -740,6 +853,7 @@ class MainWindow(QMainWindow):
         self.sum_plot.ax.set_xlabel("t, сек")
         self.sum_plot.ax.legend(loc="best")
         self.sum_plot.canvas.draw_idle()
+
 
     def _calculate_spectrum(self):
         if self.summed_signal is None:
@@ -759,7 +873,7 @@ class MainWindow(QMainWindow):
         delta_t = abs(t[1] - t[0])
 
         spectrum = fftshift(fft(fftshift(self.summed_signal))) / n
-        freq = fftshift(fftfreq(n, delta_t)) * 2.0 * np.pi
+        freq = fftshift(fftfreq(n, delta_t))
 
         self.spectrum_freq = freq
         self.spectrum_amp = np.abs(spectrum)
@@ -792,7 +906,7 @@ class MainWindow(QMainWindow):
 
         self.spec_plot.ax.plot(self.spectrum_freq, y, color="tab:blue", linewidth=1.3)
         self.spec_plot.ax.set_title(title)
-        self.spec_plot.ax.set_xlabel("ω, рад/с")
+        self.spec_plot.ax.set_xlabel("f, Гц")
         self.spec_plot.ax.grid(True)
         self.spec_plot.canvas.draw_idle()
 
