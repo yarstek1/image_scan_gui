@@ -290,8 +290,8 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Сигналы")
         root = QVBoxLayout(box)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Выбор", "Название", "Цвет", "Удалить"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Выбор", "Название", "Цвет", "Удалить", "Копировать"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.itemSelectionChanged.connect(self._update_buttons_state)
@@ -540,6 +540,11 @@ class MainWindow(QMainWindow):
             btn_delete.clicked.connect(lambda _=False, row=i: self._delete_signal(row))
             self.table.setCellWidget(i, 3, btn_delete)
 
+            btn_copy = QPushButton("Копировать")
+            btn_copy.clicked.connect(lambda _=False, row=i: self._copy_signal(row))
+            self.table.setCellWidget(i, 4, btn_copy)
+
+
         if 0 <= prev_row < len(self.signals):
             self.table.selectRow(prev_row)
 
@@ -609,6 +614,22 @@ class MainWindow(QMainWindow):
 
         self._refresh_table()
         self._update_buttons_state()
+
+    def _copy_signal(self, row: int):
+        if row < 0 or row >= len(self.signals):
+            return
+        
+        copy_index = len(self.signals)
+        name_copy = self.signals[row].name
+        
+        signal_copy = SignalItem(
+            name=f"{name_copy} (Копия)",
+            color=default_signal_color(copy_index),
+            values=self.signals[row].values.copy(),
+        )
+
+        self.signals.append(signal_copy)
+        self._refresh_table()
 
     def _extract_unique_colors(self, img: np.ndarray) -> np.ndarray:
         rgb = img[:, :, :3]
