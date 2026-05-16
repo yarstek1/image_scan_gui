@@ -353,6 +353,11 @@ class MainWindow(QMainWindow):
         self.btn_level.clicked.connect(self._toggle_level_mode)
         right.addWidget(self.btn_level)
 
+        self.btn_phase_shift = QPushButton("Редактировать сдвиг")
+        self.btn_phase_shift.setCheckable(True)
+        self.btn_phase_shift.clicked.connect(self._toggle_phase_shift)
+        right.addWidget(self.btn_phase_shift)
+
         self.btn_undo = QPushButton("Отмена")
         self.btn_undo.clicked.connect(self._undo_last_edit)
         right.addWidget(self.btn_undo)
@@ -370,6 +375,11 @@ class MainWindow(QMainWindow):
         self.level_slider.valueChanged.connect(self._on_level_slider_changed)
         self.level_slider.setSizePolicy(POLICY_FIXED, POLICY_EXPANDING)
         right.addWidget(self.level_slider, 1)
+
+        self.input_time_shift = QLineEdit()
+        right.addWidget(self.input_time_shift)
+        self.input_time_shift.hide()
+        self.input_time_shift.textChanged.connect(self._on_phase_shift_changed)
 
         right.addStretch(1)
         root.addLayout(right)
@@ -765,6 +775,62 @@ class MainWindow(QMainWindow):
         else:
             self.level_slider_active = False
             self.level_slider.hide()
+
+    def _toggle_phase_shift(self):
+        active = self.btn_phase_shift.isChecked() and self.edit_values is not None
+        if active:
+            self.btn_zero.setChecked(False)
+            self.btn_level.setChecked(False)
+            self.span_selector.set_active(False)
+            self._clear_span_selection()
+            self.level_slider_active = False
+            self.level_slider.hide()
+            self.input_time_shift.show()
+        else:
+            self.input_time_shift.hide()
+
+    def _on_phase_shift_changed(self):
+        self._validate_phase_shift()
+        self._apply_phase_shift()
+
+    def _parse_phase_shift(self) -> Optional[float]:
+        delta_t = None
+
+        try:
+            val = float(self.input_time_shift.text().strip())
+            delta_t = val
+        except Exception:
+            pass
+        return delta_t
+    
+    def _validate_phase_shift(self):
+        t_half, _ = self._parse_params()
+        delta_t = self._parse_phase_shift()
+        if t_half is None:
+            self.input_time_shift.setStyleSheet("border: 1px solid red;")
+        elif t_half < delta_t:
+            self.input_time_shift.setStyleSheet("border: 1px solid red;")
+        else:
+            self.input_time_shift.setStyleSheet("")
+    
+    def _apply_phase_shift(self):
+        delta_t = self._parse_phase_shift()
+        t_half, _ = self._parse_params()
+        delta_t_valid = delta_t is not None and delta_t <= t_half
+        
+        if not delta_t_valid or self.edit_values is None:
+            return
+
+        n = len(self.edit_values)
+        t = build_time_axis(t_half, n)
+        delta_t_sample = abs(t[1] - t[0])
+        n_steps = int(round(delta_t / delta_t_sample))
+        
+        signal_shifted = self.edit_values.copy()
+        self.edit_values = np.roll(signal_shifted, n_steps)
+        self._plot_edit_signal()
+        self._update_buttons_state()
+
 
 
     def _on_span_selected(self, x_min: float, x_max: float):
