@@ -501,6 +501,7 @@ class MainWindow(QMainWindow):
         has_edit = self.edit_values is not None
         self.btn_zero.setEnabled(has_edit)
         self.btn_level.setEnabled(has_edit)
+        self.btn_phase_shift.setEnabled(has_edit)
         self.btn_undo.setEnabled(len(self.undo_stack) > 0)
         self.btn_save.setEnabled(has_edit and len(self.undo_stack) > 0)
 
@@ -755,8 +756,10 @@ class MainWindow(QMainWindow):
         active = self.btn_zero.isChecked() and self.edit_values is not None
         if active:
             self.btn_level.setChecked(False)
+            self.btn_phase_shift.setChecked(False)
             self.level_slider.hide()
             self.level_slider_active = False
+            self.input_time_shift.hide()
         else:
             self._clear_span_selection()
         self.span_selector.set_active(active)
@@ -766,12 +769,14 @@ class MainWindow(QMainWindow):
         active = self.btn_level.isChecked() and self.edit_values is not None
         if active:
             self.btn_zero.setChecked(False)
+            self.btn_phase_shift.setChecked(False)
             self.span_selector.set_active(False)
             self._clear_span_selection()
             self.level_slider_active = True
             self.level_slider.setValue(0)
             self.level_slider.show()
             self.edit_values_baseline = self.edit_values.copy() if self.edit_values is not None else None
+            self.input_time_shift.hide()
         else:
             self.level_slider_active = False
             self.level_slider.hide()
@@ -786,6 +791,7 @@ class MainWindow(QMainWindow):
             self.level_slider_active = False
             self.level_slider.hide()
             self.input_time_shift.show()
+            self.input_time_shift.setFocus()
         else:
             self.input_time_shift.hide()
 
@@ -794,21 +800,25 @@ class MainWindow(QMainWindow):
         self._apply_phase_shift()
 
     def _parse_phase_shift(self) -> Optional[float]:
-        delta_t = None
-
+        text = self.input_time_shift.text().strip()
+        if not text:
+            return 0.0
+        
         try:
-            val = float(self.input_time_shift.text().strip())
-            delta_t = val
+            val = float(text)
+            return val
         except Exception:
-            pass
-        return delta_t
+            return None
     
     def _validate_phase_shift(self):
         t_half, _ = self._parse_params()
         delta_t = self._parse_phase_shift()
+        
         if t_half is None:
             self.input_time_shift.setStyleSheet("border: 1px solid red;")
-        elif t_half < delta_t:
+        elif delta_t is None or delta_t < 0:
+            self.input_time_shift.setStyleSheet("border: 1px solid red;")
+        elif delta_t > t_half:
             self.input_time_shift.setStyleSheet("border: 1px solid red;")
         else:
             self.input_time_shift.setStyleSheet("")
@@ -816,9 +826,18 @@ class MainWindow(QMainWindow):
     def _apply_phase_shift(self):
         delta_t = self._parse_phase_shift()
         t_half, _ = self._parse_params()
-        delta_t_valid = delta_t is not None and delta_t <= t_half
         
-        if not delta_t_valid or self.edit_values is None:
+        if t_half is None:
+            return
+
+        # Пустая строка или 0 = нет сдвига
+        if delta_t is None:
+            return
+
+        if delta_t < 0 or delta_t > t_half:
+            return
+        
+        if self.edit_values is None:
             return
 
         n = len(self.edit_values)
@@ -827,9 +846,14 @@ class MainWindow(QMainWindow):
         n_steps = int(round(delta_t / delta_t_sample))
         
         signal_shifted = self.edit_values.copy()
-        self.edit_values = np.roll(signal_shifted, n_steps)
-        self._plot_edit_signal()
-        self._update_buttons_state()
+        shifted_values = np.roll(signal_shifted, n_steps)
+        
+        # Сохраняем старое значение в undo stack
+        if not np.array_equal(shifted_values, self.edit_values):
+            self.undo_stack.append(self.edit_values.copy())
+            self.edit_values = shifted_values
+            self._plot_edit_signal()
+            self._update_buttons_state()
 
 
 
