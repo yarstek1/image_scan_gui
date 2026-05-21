@@ -27,6 +27,7 @@ try:
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QDoubleSpinBox,
         QSizePolicy,
         QSlider,
         QTableWidget,
@@ -74,6 +75,8 @@ except ImportError:
         QTableWidgetItem,
         QVBoxLayout,
         QWidget,
+        #QSpinBox,
+        QDoubleSpinBox
     )
 
     os.environ.setdefault("QT_API", "pyqt5")
@@ -254,6 +257,8 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[np.ndarray] = []
         self.is_table_refresh = False
         self.level_slider_active = False
+        self.amplify_values_baseline: Optional[np.ndarray] = None
+        self.amplify_undo_pushed = False
         self.show_components_active = False
 
         self.spectrum_freq: Optional[np.ndarray] = None
@@ -353,10 +358,15 @@ class MainWindow(QMainWindow):
         self.btn_level.clicked.connect(self._toggle_level_mode)
         right.addWidget(self.btn_level)
 
-        self.btn_phase_shift = QPushButton("Редактировать сдвиг")
+        self.btn_phase_shift = QPushButton("Cдвиг фазы")
         self.btn_phase_shift.setCheckable(True)
-        self.btn_phase_shift.clicked.connect(self._toggle_phase_shift)
+        self.btn_phase_shift.clicked.connect(self._toggle_phase_shift_mode)
         right.addWidget(self.btn_phase_shift)
+
+        self.btn_amplify = QPushButton("Усиление")
+        self.btn_amplify.setCheckable(True)
+        self.btn_amplify.clicked.connect(self._toggle_amplify_mode)
+        right.addWidget(self.btn_amplify)
 
         self.btn_undo = QPushButton("Отмена")
         self.btn_undo.clicked.connect(self._undo_last_edit)
@@ -377,9 +387,24 @@ class MainWindow(QMainWindow):
         right.addWidget(self.level_slider, 1)
 
         self.input_time_shift = QLineEdit()
+        self.label_time_shift = QLabel("Введите сдвиг в сек:")
+        right.addWidget(self.label_time_shift)
         right.addWidget(self.input_time_shift)
         self.input_time_shift.hide()
+        self.label_time_shift.hide()
         self.input_time_shift.textChanged.connect(self._on_phase_shift_changed)
+
+        self.spinbox_amplify = QDoubleSpinBox()
+        self.spinbox_amplify.setRange(0.0, 10.0)
+        self.spinbox_amplify.setValue(1.0)
+        self.spinbox_amplify.setSingleStep(0.1)
+        self.label_amplify = QLabel("Выберите коэффициент усиления:")
+        right.addWidget(self.label_amplify)
+        right.addWidget(self.spinbox_amplify)
+        self.spinbox_amplify.hide()
+        self.label_amplify.hide() 
+        self.spinbox_amplify.valueChanged.connect(self._on_amplify_value_changed)
+
 
         right.addStretch(1)
         root.addLayout(right)
@@ -502,6 +527,7 @@ class MainWindow(QMainWindow):
         self.btn_zero.setEnabled(has_edit)
         self.btn_level.setEnabled(has_edit)
         self.btn_phase_shift.setEnabled(has_edit)
+        self.btn_amplify.setEnabled(has_edit)
         self.btn_undo.setEnabled(len(self.undo_stack) > 0)
         self.btn_save.setEnabled(has_edit and len(self.undo_stack) > 0)
 
@@ -626,17 +652,31 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self._update_buttons_state()
 
+    def _build_copy_name(self, original_name: str) -> str:
+        existing_names = {s.name for s in self.signals}
+
+        first_variant = f"{original_name} (Копия)"
+        if first_variant not in existing_names:
+            return first_variant
+
+        idx = 2
+        while True:
+            candidate = f"{original_name} (Копия {idx})"
+            if candidate not in existing_names:
+                return candidate
+            idx += 1
+
     def _copy_signal(self, row: int):
         if row < 0 or row >= len(self.signals):
             return
         
         copy_index = len(self.signals)
-        name_copy = self.signals[row].name
-        
+        source = self.signals[row]
+
         signal_copy = SignalItem(
-            name=f"{name_copy} (Копия)",
+            name=self._build_copy_name(source.name),
             color=default_signal_color(copy_index),
-            values=self.signals[row].values.copy(),
+            values=source.values.copy(),
         )
 
         self.signals.append(signal_copy)
@@ -718,10 +758,19 @@ class MainWindow(QMainWindow):
 
         self.btn_zero.setChecked(False)
         self.btn_level.setChecked(False)
+        self.btn_phase_shift.setChecked(False)
+        self.btn_amplify.setChecked(False)
         self.span_selector.set_active(False)
         self._clear_span_selection()
         self.level_slider.hide()
         self.level_slider.setValue(0)
+        self.input_time_shift.hide()
+        self.label_time_shift.hide()
+        self.spinbox_amplify.hide()
+        self.label_amplify.hide()
+        self.spinbox_amplify.setValue(1.0)
+        self.amplify_values_baseline = None
+        self.amplify_undo_pushed = False
 
         self._plot_edit_signal()
         self._update_buttons_state()
@@ -757,9 +806,15 @@ class MainWindow(QMainWindow):
         if active:
             self.btn_level.setChecked(False)
             self.btn_phase_shift.setChecked(False)
+            self.btn_amplify.setChecked(False)
             self.level_slider.hide()
             self.level_slider_active = False
             self.input_time_shift.hide()
+            self.label_time_shift.hide()
+            self.spinbox_amplify.hide()
+            self.label_amplify.hide()
+            self.amplify_values_baseline = None
+            self.amplify_undo_pushed = False
         else:
             self._clear_span_selection()
         self.span_selector.set_active(active)
@@ -770,6 +825,7 @@ class MainWindow(QMainWindow):
         if active:
             self.btn_zero.setChecked(False)
             self.btn_phase_shift.setChecked(False)
+            self.btn_amplify.setChecked(False)
             self.span_selector.set_active(False)
             self._clear_span_selection()
             self.level_slider_active = True
@@ -777,23 +833,35 @@ class MainWindow(QMainWindow):
             self.level_slider.show()
             self.edit_values_baseline = self.edit_values.copy() if self.edit_values is not None else None
             self.input_time_shift.hide()
+            self.label_time_shift.hide()
+            self.spinbox_amplify.hide()
+            self.label_amplify.hide()
+            self.amplify_values_baseline = None
+            self.amplify_undo_pushed = False
         else:
             self.level_slider_active = False
             self.level_slider.hide()
 
-    def _toggle_phase_shift(self):
+    def _toggle_phase_shift_mode(self):
         active = self.btn_phase_shift.isChecked() and self.edit_values is not None
         if active:
             self.btn_zero.setChecked(False)
             self.btn_level.setChecked(False)
+            self.btn_amplify.setChecked(False)
             self.span_selector.set_active(False)
             self._clear_span_selection()
             self.level_slider_active = False
             self.level_slider.hide()
+            self.spinbox_amplify.hide()
+            self.label_amplify.hide()
+            self.amplify_values_baseline = None
+            self.amplify_undo_pushed = False
             self.input_time_shift.show()
+            self.label_time_shift.show()
             self.input_time_shift.setFocus()
         else:
             self.input_time_shift.hide()
+            self.label_time_shift.hide()
 
     def _on_phase_shift_changed(self):
         self._validate_phase_shift()
@@ -855,7 +923,65 @@ class MainWindow(QMainWindow):
             self._plot_edit_signal()
             self._update_buttons_state()
 
+    def _toggle_amplify_mode(self):
+        active = self.btn_amplify.isChecked() and self.edit_values is not None
+        if active:
+            self.btn_zero.setChecked(False)
+            self.btn_level.setChecked(False)
+            self.btn_phase_shift.setChecked(False)
 
+            self.span_selector.set_active(False)
+            self._clear_span_selection()
+
+            self.level_slider_active = False
+            self.level_slider.hide()
+
+            self.input_time_shift.hide()
+            self.label_time_shift.hide()
+
+            self.amplify_values_baseline = self.edit_values.copy()
+            self.amplify_undo_pushed = False
+
+            self.spinbox_amplify.blockSignals(True)
+            self.spinbox_amplify.setValue(1.0)
+            self.spinbox_amplify.blockSignals(False)
+
+            self.label_amplify.show()
+            self.spinbox_amplify.show()
+            self.spinbox_amplify.setFocus()
+        else:
+            self.spinbox_amplify.hide()
+            self.label_amplify.hide()
+            self.amplify_values_baseline = None
+            self.amplify_undo_pushed = False
+
+    def _parse_amplitude(self) -> Optional[float]:
+        try:
+            return float(self.spinbox_amplify.value())
+        except Exception:
+            return None
+
+    def _on_amplify_value_changed(self):
+        if not self.btn_amplify.isChecked():
+            return
+        if self.edit_values is None or self.amplify_values_baseline is None:
+            return
+
+        amplify_coef = self._parse_amplitude()
+        if amplify_coef is None:
+            return
+
+        amplified_signal = self.amplify_values_baseline * amplify_coef
+        if np.array_equal(amplified_signal, self.edit_values):
+            return
+
+        if not self.amplify_undo_pushed:
+            self.undo_stack.append(self.amplify_values_baseline.copy())
+            self.amplify_undo_pushed = True
+
+        self.edit_values = amplified_signal
+        self._plot_edit_signal()
+        self._update_buttons_state()
 
     def _on_span_selected(self, x_min: float, x_max: float):
         if not self.btn_zero.isChecked() or self.edit_values is None:
