@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(["Выбор", "Название", "Цвет", "Удалить", "Копировать"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.itemSelectionChanged.connect(self._update_buttons_state)
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self.table.itemChanged.connect(self._on_table_item_changed)
         self.table.cellClicked.connect(self._on_table_cell_clicked)
         root.addWidget(self.table)
@@ -327,10 +327,6 @@ class MainWindow(QMainWindow):
         self.btn_add = QPushButton("Добавить")
         self.btn_add.clicked.connect(self._add_signal_flow)
         row_cmd.addWidget(self.btn_add)
-
-        self.btn_show = QPushButton("Показать")
-        self.btn_show.clicked.connect(self._show_selected_signal)
-        row_cmd.addWidget(self.btn_show)
 
         self.btn_show_sum = QPushButton("Показать сумму")
         self.btn_show_sum.clicked.connect(self._show_sum)
@@ -516,9 +512,6 @@ class MainWindow(QMainWindow):
         t_half, n_points = self._parse_params()
         params_valid = t_half is not None and n_points is not None
 
-        selected_row = self.table.currentRow()
-        has_selected = selected_row >= 0 and selected_row < len(self.signals)
-
         checked_count = 0
         for r in range(self.table.rowCount()):
             item = self.table.item(r, 0)
@@ -526,7 +519,6 @@ class MainWindow(QMainWindow):
                 checked_count += 1
 
         self.btn_add.setEnabled(params_valid)
-        self.btn_show.setEnabled(has_selected)
         self.btn_show_sum.setEnabled(len(self.signals) > 0 and checked_count > 0)
 
         has_edit = self.edit_values is not None
@@ -603,6 +595,17 @@ class MainWindow(QMainWindow):
             if it is not None and it.checkState() == CHECKED:
                 rows.append(r)
         return rows
+
+    def _on_table_selection_changed(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.signals):
+            self._update_buttons_state()
+            return
+
+        if self.current_edit_index != row:
+            self._show_selected_signal()
+        else:
+            self._update_buttons_state()
 
     def _on_table_item_changed(self, item: QTableWidgetItem):
         if self.is_table_refresh:
