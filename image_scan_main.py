@@ -8,6 +8,8 @@ import numpy as np
 from scipy.fft import fft, fftfreq, fftshift
 from skimage import io as skio
 
+#Добавить возможность смотреть несколько спектров
+
 try:
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QColor, QIcon, QPixmap
@@ -444,6 +446,10 @@ class MainWindow(QMainWindow):
         self.btn_calc_spec.clicked.connect(self._calculate_spectrum)
         root.addWidget(self.btn_calc_spec)
 
+        self.btn_save_spectrum = QPushButton("Сохранить спектр")
+        self.btn_save_spectrum.clicked.connect(self._save_spectrum_plot)
+        root.addWidget(self.btn_save_spectrum)
+
         modes = QHBoxLayout()
         self.btn_amp = QPushButton("Амплитуда")
         self.btn_phase = QPushButton("Фаза")
@@ -545,6 +551,7 @@ class MainWindow(QMainWindow):
         spectrum_ready = self.spectrum_amp is not None
         for b in [self.btn_amp, self.btn_phase, self.btn_real, self.btn_imag]:
             b.setEnabled(spectrum_ready)
+        self.btn_save_spectrum.setEnabled(spectrum_ready)
 
     def _update_show_components_button_style(self):
         if self.show_components_active and self.summed_signal is not None:
@@ -1121,6 +1128,35 @@ class MainWindow(QMainWindow):
         self.btn_amp.setChecked(True)
         self._plot_spectrum_mode("amp")
         self._update_buttons_state()
+
+    def _save_spectrum_plot(self):
+        if self.spectrum_freq is None:
+            self._show_error("Сначала рассчитайте спектр.")
+            return
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить график спектра",
+            "spectrum.png",
+            "PNG files (*.png);;JPEG files (*.jpg *.jpeg);;PDF files (*.pdf);;SVG files (*.svg)",
+        )
+        if not file_path:
+            return
+
+        if not os.path.splitext(file_path)[1]:
+            if "JPEG" in selected_filter:
+                file_path += ".jpg"
+            elif "PDF" in selected_filter:
+                file_path += ".pdf"
+            elif "SVG" in selected_filter:
+                file_path += ".svg"
+            else:
+                file_path += ".png"
+
+        try:
+            self.spec_plot.figure.savefig(file_path, dpi=300, bbox_inches="tight")
+        except Exception as exc:
+            self._show_error(f"Не удалось сохранить спектр: {exc}")
 
     def _plot_spectrum_mode(self, mode: str):
         if self.spectrum_freq is None:
