@@ -393,8 +393,9 @@ class MainWindow(QMainWindow):
         self.input_time_shift.textChanged.connect(self._on_phase_shift_changed)
 
         self.spinbox_amplify = QDoubleSpinBox()
-        self.spinbox_amplify.setRange(0.0, 10.0)
+        self.spinbox_amplify.setRange(-10.0, 10.0)
         self.spinbox_amplify.setValue(1.0)
+
         self.spinbox_amplify.setSingleStep(0.1)
         self.label_amplify = QLabel("Выберите коэффициент усиления:")
         right.addWidget(self.label_amplify)
@@ -427,26 +428,40 @@ class MainWindow(QMainWindow):
         self.sum_plot = MplView()
         root.addWidget(self.sum_plot)
 
+        actions = QHBoxLayout()
+
         self.btn_show_components = QPushButton("Показать исходные сигналы")
         self.btn_show_components.setCheckable(True)
         self.btn_show_components.toggled.connect(self._toggle_show_components)
-        root.addWidget(self.btn_show_components)
+        actions.addWidget(self.btn_show_components)
+
+        self.btn_save_sum = QPushButton("Сохранить сумму")
+        self.btn_save_sum.clicked.connect(self._save_sum_plot)
+        actions.addWidget(self.btn_save_sum)
+
+        root.addLayout(actions)
 
         return box
+
 
     def _build_spectrum_panel(self) -> QGroupBox:
         box = QGroupBox("Спектр")
         root = QVBoxLayout(box)
 
+        actions = QHBoxLayout()
+
         self.btn_calc_spec = QPushButton("Рассчитать спектр")
         self.btn_calc_spec.clicked.connect(self._calculate_spectrum)
-        root.addWidget(self.btn_calc_spec)
+        actions.addWidget(self.btn_calc_spec)
 
         self.btn_save_spectrum = QPushButton("Сохранить спектр")
         self.btn_save_spectrum.clicked.connect(self._save_spectrum_plot)
-        root.addWidget(self.btn_save_spectrum)
+        actions.addWidget(self.btn_save_spectrum)
+
+        root.addLayout(actions)
 
         modes = QHBoxLayout()
+
         self.btn_amp = QPushButton("Амплитуда")
         self.btn_phase = QPushButton("Фаза")
         self.btn_real = QPushButton("Действительная часть")
@@ -537,10 +552,12 @@ class MainWindow(QMainWindow):
             self.btn_show_components.blockSignals(False)
 
         self.btn_show_components.setEnabled(has_sum)
+        self.btn_save_sum.setEnabled(has_sum)
         self._update_show_components_button_style()
         self.btn_calc_spec.setEnabled(has_sum)
 
         spectrum_ready = self.spectrum_amp is not None
+
         for b in [self.btn_amp, self.btn_phase, self.btn_real, self.btn_imag]:
             b.setEnabled(spectrum_ready)
         self.btn_save_spectrum.setEnabled(spectrum_ready)
@@ -1101,8 +1118,37 @@ class MainWindow(QMainWindow):
         self.sum_plot.ax.legend(loc="best")
         self.sum_plot.canvas.draw_idle()
 
+    def _save_sum_plot(self):
+        if self.summed_signal is None:
+            self._show_error("Сначала сформируйте сумму сигналов.")
+            return
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить график суммы",
+            "sum_signal.png",
+            "PNG files (*.png);;JPEG files (*.jpg *.jpeg);;PDF files (*.pdf);;SVG files (*.svg)",
+        )
+        if not file_path:
+            return
+
+        if not os.path.splitext(file_path)[1]:
+            if "JPEG" in selected_filter:
+                file_path += ".jpg"
+            elif "PDF" in selected_filter:
+                file_path += ".pdf"
+            elif "SVG" in selected_filter:
+                file_path += ".svg"
+            else:
+                file_path += ".png"
+
+        try:
+            self.sum_plot.figure.savefig(file_path, dpi=300, bbox_inches="tight")
+        except Exception as exc:
+            self._show_error(f"Не удалось сохранить сумму: {exc}")
 
     def _calculate_spectrum(self):
+
         if self.summed_signal is None:
             return
 
