@@ -17,6 +17,7 @@ try:
         QAbstractItemView,
         QApplication,
         QButtonGroup,
+        QCheckBox,
         QComboBox,
         QDialog,
         QColorDialog,
@@ -52,6 +53,8 @@ try:
     DIALOG_ACCEPTED = QDialog.DialogCode.Accepted
     COLOR_DIALOG_DONT_USE_NATIVE = QColorDialog.ColorDialogOption.DontUseNativeDialog
     COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ColorDialogOption.ShowAlphaChannel
+    MESSAGEBOX_YES = QMessageBox.StandardButton.Yes
+    MESSAGEBOX_NO = QMessageBox.StandardButton.No
 except ImportError:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QColor, QIcon, QPixmap
@@ -59,6 +62,7 @@ except ImportError:
         QAbstractItemView,
         QApplication,
         QButtonGroup,
+        QCheckBox,
         QComboBox,
         QDialog,
         QColorDialog,
@@ -95,6 +99,9 @@ except ImportError:
     DIALOG_ACCEPTED = QDialog.Accepted
     COLOR_DIALOG_DONT_USE_NATIVE = QColorDialog.DontUseNativeDialog
     COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ShowAlphaChannel
+    MESSAGEBOX_YES = QMessageBox.Yes
+    MESSAGEBOX_NO = QMessageBox.No
+
 
 from matplotlib.figure import Figure
 from matplotlib.widgets import SpanSelector
@@ -123,6 +130,8 @@ class SignalItem:
     name: str
     color: QColor
     values: np.ndarray
+    raw_values: np.ndarray
+
 
 
 def build_time_axis(t_half: float, n_points: int) -> np.ndarray:
@@ -269,8 +278,17 @@ class MainWindow(QMainWindow):
         self.spectrum_real: Optional[np.ndarray] = None
         self.spectrum_imag: Optional[np.ndarray] = None
 
+        self.t_half: Optional[float] = None
+        self.n_points: Optional[int] = None
+
+        self.freq_limit_min: Optional[float] = None
+        self.freq_limit_max: Optional[float] = None
+
         self._build_ui()
+        self._update_fourier_params_ui()
+        self._reset_frequency_limits(update_plot=False)
         self._update_buttons_state()
+
 
     def _build_ui(self):
         central = QWidget()
@@ -278,20 +296,94 @@ class MainWindow(QMainWindow):
 
         grid = QGridLayout(central)
 
+        self.sidebar_box = self._build_sidebar_panel()
         self.signals_box = self._build_signals_panel()
         self.edit_box = self._build_edit_panel()
         self.spectrum_box = self._build_spectrum_panel()
         self.sum_box = self._build_sum_panel()
 
-        grid.addWidget(self.signals_box, 0, 0)
-        grid.addWidget(self.edit_box, 0, 1)
-        grid.addWidget(self.spectrum_box, 1, 0)
-        grid.addWidget(self.sum_box, 1, 1)
+        grid.addWidget(self.sidebar_box, 0, 0, 2, 1)
+        grid.addWidget(self.signals_box, 0, 1)
+        grid.addWidget(self.edit_box, 0, 2)
+        grid.addWidget(self.spectrum_box, 1, 1)
+        grid.addWidget(self.sum_box, 1, 2)
 
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
-        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 1)
+
+
+    def _build_sidebar_panel(self) -> QGroupBox:
+        box = QGroupBox("Параметры")
+        root = QVBoxLayout(box)
+
+        scan_box = QGroupBox("Параметры развертки")
+        scan_layout = QVBoxLayout(scan_box)
+
+        row_t = QHBoxLayout()
+        row_t.addWidget(QLabel("T/2, сек"))
+        self.input_t_half = QLineEdit()
+        self.input_t_half.textChanged.connect(self._on_params_changed)
+        row_t.addWidget(self.input_t_half)
+        scan_layout.addLayout(row_t)
+
+        row_n = QHBoxLayout()
+        row_n.addWidget(QLabel("Количество отсчетов N"))
+        self.input_n = QLineEdit()
+        self.input_n.textChanged.connect(self._on_params_changed)
+        row_n.addWidget(self.input_n)
+        scan_layout.addLayout(row_n)
+
+        self.btn_apply_params = QPushButton("Применить параметры")
+        self.btn_apply_params.clicked.connect(self._apply_scan_params)
+        scan_layout.addWidget(self.btn_apply_params)
+
+        self.btn_add = QPushButton("Добавить")
+        self.btn_add.clicked.connect(self._add_signal_flow)
+        scan_layout.addWidget(self.btn_add)
+
+        root.addWidget(scan_box)
+
+        fft_box = QGroupBox("Параметры Фурье")
+        fft_layout = QVBoxLayout(fft_box)
+        self.label_dt = QLabel("Шаг по времени (T / N): —")
+        self.label_df = QLabel("Шаг по частоте (1 / T): —")
+        self.label_fs = QLabel("Частота дискретизации (N / T): —")
+        self.label_fmax = QLabel("Максимальная частота спектра (N / 2T): —")
+        fft_layout.addWidget(self.label_dt)
+        fft_layout.addWidget(self.label_df)
+        fft_layout.addWidget(self.label_fs)
+        fft_layout.addWidget(self.label_fmax)
+
+        root.addWidget(fft_box)
+
+        limits_box = QGroupBox("Ограничение по частоте")
+        limits_layout = QVBoxLayout(limits_box)
+
+        row_min = QHBoxLayout()
+        row_min.addWidget(QLabel("Нижняя, Гц"))
+        self.input_freq_min = QLineEdit()
+        self.input_freq_min.textChanged.connect(self._on_frequency_limits_changed)
+        row_min.addWidget(self.input_freq_min)
+        limits_layout.addLayout(row_min)
+
+        row_max = QHBoxLayout()
+        row_max.addWidget(QLabel("Верхняя, Гц"))
+        self.input_freq_max = QLineEdit()
+        self.input_freq_max.textChanged.connect(self._on_frequency_limits_changed)
+        row_max.addWidget(self.input_freq_max)
+        limits_layout.addLayout(row_max)
+
+        self.btn_reset_freq_limits = QPushButton("Сбросить")
+        self.btn_reset_freq_limits.clicked.connect(lambda: self._reset_frequency_limits(update_plot=True))
+        limits_layout.addWidget(self.btn_reset_freq_limits)
+
+
+        root.addWidget(limits_box)
+        return box
+
 
     def _build_signals_panel(self) -> QGroupBox:
         box = QGroupBox("Сигналы")
@@ -306,36 +398,12 @@ class MainWindow(QMainWindow):
         self.table.cellClicked.connect(self._on_table_cell_clicked)
         root.addWidget(self.table)
 
-        params_box = QGroupBox("Параметры развертки")
-        params_layout = QVBoxLayout(params_box)
-
-        row_t = QHBoxLayout()
-        row_t.addWidget(QLabel("T/2, сек"))
-        self.input_t_half = QLineEdit()
-        self.input_t_half.textChanged.connect(self._on_params_changed)
-        row_t.addWidget(self.input_t_half)
-        params_layout.addLayout(row_t)
-
-        row_n = QHBoxLayout()
-        row_n.addWidget(QLabel("Количество отсчетов N"))
-        self.input_n = QLineEdit()
-        self.input_n.textChanged.connect(self._on_params_changed)
-        row_n.addWidget(self.input_n)
-        params_layout.addLayout(row_n)
-
-        row_cmd = QHBoxLayout()
-        self.btn_add = QPushButton("Добавить")
-        self.btn_add.clicked.connect(self._add_signal_flow)
-        row_cmd.addWidget(self.btn_add)
-
         self.btn_show_sum = QPushButton("Показать сумму")
         self.btn_show_sum.clicked.connect(self._show_sum)
-        row_cmd.addWidget(self.btn_show_sum)
-
-        params_layout.addLayout(row_cmd)
-        root.addWidget(params_box)
+        root.addWidget(self.btn_show_sum)
 
         return box
+
 
     def _build_edit_panel(self) -> QGroupBox:
         box = QGroupBox("Редактирование")
@@ -460,7 +528,13 @@ class MainWindow(QMainWindow):
 
         root.addLayout(actions)
 
+        self.checkbox_positive_freq_only = QCheckBox("только положительные")
+        self.checkbox_positive_freq_only.setChecked(True)
+        self.checkbox_positive_freq_only.toggled.connect(self._on_positive_freq_only_toggled)
+        root.addWidget(self.checkbox_positive_freq_only)
+
         modes = QHBoxLayout()
+
 
         self.btn_amp = QPushButton("Амплитуда")
         self.btn_phase = QPushButton("Фаза")
@@ -488,16 +562,27 @@ class MainWindow(QMainWindow):
         self.spec_plot = MplView()
         root.addWidget(self.spec_plot)
 
+        self.spec_span_selector = SpanSelector(
+            self.spec_plot.ax,
+            self._on_spectrum_span_selected,
+            direction="horizontal",
+            useblit=True,
+            props=dict(alpha=0.2, facecolor="orange"),
+            interactive=True,
+            drag_from_anywhere=True,
+        )
+        self.spec_span_selector.set_active(True)
+
         return box
+
 
     def _show_error(self, text: str):
         QMessageBox.warning(self, "Ошибка", text)
 
-    def _on_params_changed(self):
-        self._validate_params_ui()
-        self._update_buttons_state()
+    def _format_param_value(self, value: float) -> str:
+        return f"{value:.6g}"
 
-    def _parse_params(self) -> tuple[Optional[float], Optional[int]]:
+    def _parse_params_input(self) -> tuple[Optional[float], Optional[int]]:
         t_half = None
         n_points = None
 
@@ -517,24 +602,237 @@ class MainWindow(QMainWindow):
 
         return t_half, n_points
 
+    def _parse_params(self) -> tuple[Optional[float], Optional[int]]:
+        return self.t_half, self.n_points
+
     def _validate_params_ui(self):
-        t_half, n_points = self._parse_params()
+        t_half, n_points = self._parse_params_input()
 
         self.input_t_half.setStyleSheet("" if t_half is not None else "border: 1px solid red;")
         self.input_n.setStyleSheet("" if n_points is not None else "border: 1px solid red;")
 
+    def _update_fourier_params_ui(self):
+        t_half, n_points = self._parse_params_input()
+
+        if t_half is None or n_points is None:
+            self.label_dt.setText("Шаг по времени (T / N): —")
+            self.label_df.setText("Шаг по частоте (1 / T): —")
+            self.label_fs.setText("Частота дискретизации (N / T): —")
+            self.label_fmax.setText("Максимальная частота спектра (N / 2T): —")
+            return
+
+        t_full = 2.0 * t_half
+        if t_full <= 0.0:
+            self.label_dt.setText("Шаг по времени (T / N): —")
+            self.label_df.setText("Шаг по частоте (1 / T): —")
+            self.label_fs.setText("Частота дискретизации (N / T): —")
+            self.label_fmax.setText("Максимальная частота спектра (N / 2T): —")
+            return
+
+        dt = t_full / n_points
+        df = 1.0 / t_full
+        fs = n_points / t_full
+        fmax = n_points / (2.0 * t_full)
+
+        self.label_dt.setText(f"Шаг по времени (T / N): {self._format_param_value(dt)}")
+        self.label_df.setText(f"Шаг по частоте (1 / T): {self._format_param_value(df)}")
+        self.label_fs.setText(f"Частота дискретизации (N / T): {self._format_param_value(fs)}")
+        self.label_fmax.setText(f"Максимальная частота спектра (N / 2T): {self._format_param_value(fmax)}")
+
+    def _frequency_bounds_defaults(self) -> tuple[Optional[float], Optional[float]]:
+        t_half, n_points = self._parse_params_input()
+        if t_half is None or n_points is None:
+            return None, None
+
+        t_full = 2.0 * t_half
+        if t_full <= 0.0:
+            return None, None
+
+        f_max = n_points / (2.0 * t_full)
+        f_min = 0.0 if self.checkbox_positive_freq_only.isChecked() else -f_max
+        return f_min, f_max
+
+    def _set_frequency_limits_inputs(self, f_min: float, f_max: float):
+        self.input_freq_min.blockSignals(True)
+        self.input_freq_max.blockSignals(True)
+        self.input_freq_min.setText(self._format_param_value(f_min))
+        self.input_freq_max.setText(self._format_param_value(f_max))
+        self.input_freq_min.blockSignals(False)
+        self.input_freq_max.blockSignals(False)
+
+    def _validate_frequency_limits_ui(self, f_min: Optional[float], f_max: Optional[float]) -> bool:
+        valid = f_min is not None and f_max is not None and f_min < f_max
+        min_style = "" if f_min is not None else "border: 1px solid red;"
+        max_style = "" if f_max is not None else "border: 1px solid red;"
+
+        if f_min is not None and f_max is not None and f_min >= f_max:
+            min_style = "border: 1px solid red;"
+            max_style = "border: 1px solid red;"
+            valid = False
+
+        bounds = self._frequency_bounds_defaults()
+        if bounds[0] is not None and bounds[1] is not None and f_min is not None and f_max is not None:
+            min_allowed, max_allowed = bounds
+            if f_min < min_allowed:
+                min_style = "border: 1px solid red;"
+                valid = False
+            if f_max > max_allowed:
+                max_style = "border: 1px solid red;"
+                valid = False
+
+        self.input_freq_min.setStyleSheet(min_style)
+        self.input_freq_max.setStyleSheet(max_style)
+        return valid
+
+
+    def _parse_frequency_limits_input(self) -> tuple[Optional[float], Optional[float]]:
+        f_min = None
+        f_max = None
+
+        try:
+            f_min = float(self.input_freq_min.text().strip())
+        except Exception:
+            pass
+
+        try:
+            f_max = float(self.input_freq_max.text().strip())
+        except Exception:
+            pass
+
+        return f_min, f_max
+
+    def _reset_frequency_limits(self, update_plot: bool = True):
+        defaults = self._frequency_bounds_defaults()
+        if defaults[0] is None or defaults[1] is None:
+            self.freq_limit_min = None
+            self.freq_limit_max = None
+            self.input_freq_min.blockSignals(True)
+            self.input_freq_max.blockSignals(True)
+            self.input_freq_min.setText("")
+            self.input_freq_max.setText("")
+            self.input_freq_min.blockSignals(False)
+            self.input_freq_max.blockSignals(False)
+            self.input_freq_min.setStyleSheet("")
+            self.input_freq_max.setStyleSheet("")
+            return
+
+        f_min, f_max = defaults
+        self.freq_limit_min = f_min
+        self.freq_limit_max = f_max
+        self._set_frequency_limits_inputs(f_min, f_max)
+        self._validate_frequency_limits_ui(f_min, f_max)
+
+        if update_plot and self.spectrum_freq is not None:
+            mode = self._current_spectrum_mode()
+            if mode is not None:
+                self._plot_spectrum_mode(mode)
+
+    def _on_frequency_limits_changed(self):
+        f_min, f_max = self._parse_frequency_limits_input()
+        if not self._validate_frequency_limits_ui(f_min, f_max):
+            return
+
+        self.freq_limit_min = f_min
+        self.freq_limit_max = f_max
+
+        if self.spectrum_freq is not None:
+            mode = self._current_spectrum_mode()
+            if mode is not None:
+                self._plot_spectrum_mode(mode)
+
+    def _on_params_changed(self):
+        self._validate_params_ui()
+        self._update_fourier_params_ui()
+        self._reset_frequency_limits(update_plot=False)
+        self._update_buttons_state()
+
+
+    def _clear_sum_and_spectrum(self):
+        self.summed_signal = None
+        self.sum_plot.clear()
+
+        self.spectrum_freq = None
+        self.spectrum_amp = None
+        self.spectrum_phase = None
+        self.spectrum_real = None
+        self.spectrum_imag = None
+        self.spec_plot.clear()
+
+    def _apply_scan_params(self):
+        t_half_new, n_points_new = self._parse_params_input()
+        if t_half_new is None or n_points_new is None:
+            self._show_error("Заполните корректно параметры T/2 и N.")
+            return
+
+        n_changed = self.n_points is not None and self.n_points != n_points_new
+
+        if n_changed and self.signals:
+            reply = QMessageBox.question(
+                self,
+                "Подтверждение пересчёта",
+                "Изменение N пересчитает все сигналы из исходных данных и сбросит внесённые правки. Продолжить?",
+                MESSAGEBOX_YES | MESSAGEBOX_NO,
+                MESSAGEBOX_NO,
+            )
+            if reply != MESSAGEBOX_YES:
+                return
+
+            try:
+                new_values = [downsample_signal(sig.raw_values, n_points_new) for sig in self.signals]
+            except Exception as exc:
+                self._show_error(f"Не удалось применить параметры: {exc}")
+                return
+
+            for sig, vals in zip(self.signals, new_values):
+                sig.values = vals
+
+            self.current_edit_index = None
+            self.edit_values = None
+            self.undo_stack.clear()
+            self.edit_plot.clear()
+
+        self.t_half = t_half_new
+        self.n_points = n_points_new
+
+        self._clear_sum_and_spectrum()
+        self._reset_frequency_limits(update_plot=False)
+        self._update_buttons_state()
+
+
+        if n_changed:
+            selected_row = self.table.currentRow()
+            if 0 <= selected_row < len(self.signals):
+                self.current_edit_index = selected_row
+                self._show_selected_signal()
+            else:
+                self.current_edit_index = None
+                self.edit_values = None
+                self.edit_plot.clear()
+        elif self.current_edit_index is not None and self.edit_values is not None:
+            self._plot_edit_signal()
+
     def _update_buttons_state(self):
-        t_half, n_points = self._parse_params()
-        params_valid = t_half is not None and n_points is not None
+        input_t_half, input_n_points = self._parse_params_input()
+        params_input_valid = input_t_half is not None and input_n_points is not None
+        params_applied = self.t_half is not None and self.n_points is not None
+
+        params_changed = (
+            not params_applied
+            or (params_input_valid and (self.t_half != input_t_half or self.n_points != input_n_points))
+        )
+        self.btn_apply_params.setEnabled(params_input_valid and params_changed)
 
         checked_count = 0
+
         for r in range(self.table.rowCount()):
             item = self.table.item(r, 0)
             if item is not None and item.checkState() == CHECKED:
                 checked_count += 1
 
-        self.btn_add.setEnabled(params_valid)
-        self.btn_show_sum.setEnabled(len(self.signals) > 0 and checked_count > 0)
+        self.btn_add.setEnabled(params_applied and not params_changed)
+        self.btn_show_sum.setEnabled(params_applied and len(self.signals) > 0 and checked_count > 0)
+
+
 
         has_edit = self.edit_values is not None
         self.btn_zero.setEnabled(has_edit)
@@ -704,6 +1002,7 @@ class MainWindow(QMainWindow):
             name=self._build_copy_name(source.name),
             color=default_signal_color(copy_index),
             values=source.values.copy(),
+            raw_values=source.raw_values.copy(),
         )
 
         self.signals.append(signal_copy)
@@ -770,6 +1069,7 @@ class MainWindow(QMainWindow):
             name=f"Сигнал {signal_index + 1}",
             color=default_signal_color(signal_index),
             values=sig_resampled.copy(),
+            raw_values=sig_full.copy(),
         )
         self.signals.append(item)
         self._refresh_table()
@@ -1207,6 +1507,49 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_error(f"Не удалось сохранить спектр: {exc}")
 
+    def _current_spectrum_mode(self) -> Optional[str]:
+        if self.btn_amp.isChecked():
+            return "amp"
+        if self.btn_phase.isChecked():
+            return "phase"
+        if self.btn_real.isChecked():
+            return "real"
+        if self.btn_imag.isChecked():
+            return "imag"
+        return None
+
+    def _on_positive_freq_only_toggled(self, _checked: bool):
+        self._reset_frequency_limits(update_plot=True)
+
+    def _on_spectrum_span_selected(self, x_min: float, x_max: float):
+        if self.spectrum_freq is None:
+            return
+
+        f_left = float(min(x_min, x_max))
+        f_right = float(max(x_min, x_max))
+        if f_right <= f_left:
+            return
+
+        defaults = self._frequency_bounds_defaults()
+        if defaults[0] is None or defaults[1] is None:
+            return
+
+        min_allowed, max_allowed = defaults
+        f_left = max(min_allowed, f_left)
+        f_right = min(max_allowed, f_right)
+
+        if f_right <= f_left:
+            return
+
+        self.freq_limit_min = f_left
+        self.freq_limit_max = f_right
+        self._set_frequency_limits_inputs(f_left, f_right)
+        self._validate_frequency_limits_ui(f_left, f_right)
+
+        mode = self._current_spectrum_mode()
+        if mode is not None:
+            self._plot_spectrum_mode(mode)
+
     def _plot_spectrum_mode(self, mode: str):
         if self.spectrum_freq is None:
             return
@@ -1226,11 +1569,37 @@ class MainWindow(QMainWindow):
             y = self.spectrum_imag
             title = "Мнимая часть спектра"
 
-        self.spec_plot.ax.plot(self.spectrum_freq, y, color="tab:blue", linewidth=1.3)
+        x = self.spectrum_freq
+        if self.checkbox_positive_freq_only.isChecked():
+            positive_mask = x >= 0
+            x = x[positive_mask]
+            y = y[positive_mask]
+
+        f_min = self.freq_limit_min
+        f_max = self.freq_limit_max
+        if f_min is None or f_max is None:
+            defaults = self._frequency_bounds_defaults()
+            f_min, f_max = defaults
+
+        if f_min is not None and f_max is not None and f_min < f_max:
+            limit_mask = (x >= f_min) & (x <= f_max)
+            x = x[limit_mask]
+            y = y[limit_mask]
+
+        if x.size == 0:
+            self.spec_plot.ax.set_title(title)
+            self.spec_plot.ax.set_xlabel("f, Гц")
+            self.spec_plot.ax.grid(True)
+            self.spec_plot.canvas.draw_idle()
+            return
+
+        self.spec_plot.ax.plot(x, y, color="tab:blue", linewidth=1.3)
         self.spec_plot.ax.set_title(title)
         self.spec_plot.ax.set_xlabel("f, Гц")
         self.spec_plot.ax.grid(True)
         self.spec_plot.canvas.draw_idle()
+
+
 
 
 def main():
