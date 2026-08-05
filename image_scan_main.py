@@ -1,8 +1,10 @@
-﻿import os
+﻿import math
+import os
 import sys
 import random
 from dataclasses import dataclass
 from typing import Optional
+
 
 import numpy as np
 from scipy.fft import fft, fftfreq, fftshift
@@ -22,10 +24,12 @@ try:
         QDialog,
         QColorDialog,
         QFileDialog,
+        QFormLayout,
         QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,
+
         QLineEdit,
         QMainWindow,
         QMessageBox,
@@ -67,10 +71,12 @@ except ImportError:
         QDialog,
         QColorDialog,
         QFileDialog,
+        QFormLayout,
         QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QLabel,
+
         QLineEdit,
         QMainWindow,
         QMessageBox,
@@ -176,7 +182,153 @@ def default_signal_color(index: int) -> QColor:
     return random_qcolor()
 
 
+def calc_model_sigma(duration: float) -> Optional[float]:
+    if duration <= 0.0:
+        return None
+
+    log_level = math.log(0.01)
+    sigma_sq = -duration / log_level
+    if sigma_sq <= 0.0:
+        return None
+
+    return math.sqrt(sigma_sq)
+
+
+def calc_model_spectrum_width(duration: float) -> Optional[float]:
+    sigma = calc_model_sigma(duration)
+    if sigma is None or sigma <= 0.0:
+        return None
+
+    return 1.0 / (2.0 * math.pi * sigma)
+
+
+class ModelSignalDialog(QDialog):
+    def __init__(self, t_half: float, n_points: int, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить модельный сигнал")
+        self.setModal(True)
+
+        self.t_half = t_half
+        self.n_points = n_points
+
+        self.duration_value: Optional[float] = None
+        self.carrier_freq_value: Optional[float] = None
+        self.amplitude_value: Optional[float] = None
+
+        t_full = 2.0 * self.t_half
+        self.delta_f = 1.0 / t_full if t_full > 0 else None
+        self.f_max = self.n_points / (2.0 * t_full) if t_full > 0 else None
+
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.input_duration = QDoubleSpinBox(self)
+        self.input_duration.setDecimals(6)
+        self.input_duration.setRange(0.0, max(0.0, t_full))
+        self.input_duration.setSingleStep(max(0.001, t_full / 200.0 if t_full > 0 else 0.001))
+        form.addRow("Длительность импульса, сек", self.input_duration)
+
+        self.input_carrier = QDoubleSpinBox(self)
+        self.input_carrier.setDecimals(6)
+        self.input_carrier.setRange(0.0, max(0.0, self.f_max if self.f_max is not None else 0.0))
+        self.input_carrier.setSingleStep(max(0.001, (self.f_max or 1.0) / 100.0))
+        form.addRow("Несущая частота, Гц", self.input_carrier)
+
+        self.input_amplitude = QDoubleSpinBox(self)
+        self.input_amplitude.setDecimals(6)
+        self.input_amplitude.setRange(0.0, 1e9)
+        self.input_amplitude.setSingleStep(0.1)
+        self.input_amplitude.setValue(1.0)
+        form.addRow("Амплитуда, ед", self.input_amplitude)
+
+        self.output_width = QLineEdit(self)
+        self.output_width.setReadOnly(True)
+        form.addRow("Ширина спектра на уровне 0.01, Гц", self.output_width)
+
+        self.output_points = QLineEdit(self)
+        self.output_points.setReadOnly(True)
+        form.addRow("Количество точек на ширину спектра", self.output_points)
+
+        self.output_periods = QLineEdit(self)
+        self.output_periods.setReadOnly(True)
+        form.addRow("Количество периодов на импульс", self.output_periods)
+
+        root.addLayout(form)
+
+        buttons = QHBoxLayout()
+        self.btn_ok = QPushButton("Ок")
+        self.btn_cancel = QPushButton("Отмена")
+        buttons.addStretch(1)
+        buttons.addWidget(self.btn_ok)
+        buttons.addWidget(self.btn_cancel)
+        root.addLayout(buttons)
+
+        self.btn_ok.setEnabled(False)
+        self.btn_ok.clicked.connect(self._accept_if_valid)
+        self.btn_cancel.clicked.connect(self.reject)
+
+        self.input_duration.valueChanged.connect(self._recalculate)
+        self.input_carrier.valueChanged.connect(self._recalculate)
+        self.input_amplitude.valueChanged.connect(self._recalculate)
+
+        self._recalculate()
+
+    def _set_field_style(self, widget: QWidget, ok: bool):
+        widget.setStyleSheet("" if ok else "border: 1px solid red;")
+
+    def _fmt(self, value: float) -> str:
+        return f"{value:.6g}"
+
+    def _recalculate(self):
+        duration = float(self.input_duration.value())
+        carrier = float(self.input_carrier.value())
+        amplitude = float(self.input_amplitude.value())
+
+        duration_ok = duration >= 0.0 and duration <= 2.0 * self.t_half
+        carrier_ok = self.f_max is not None and carrier >= 0.0 and carrier <= self.f_max
+        amplitude_ok = amplitude >= 0.0
+
+        width_value = calc_model_spectrum_width(duration)
+        width_ok = False
+        if width_value is not None and self.delta_f is not None and self.f_max is not None:
+            width_ok = self.delta_f <= width_value <= self.f_max
+
+        if width_value is None:
+            self.output_width.setText("—")
+        else:
+            self.output_width.setText(self._fmt(width_value))
+        self._set_field_style(self.output_width, width_ok)
+
+        points_value = None
+        points_ok = False
+        if width_value is not None and self.delta_f is not None and self.delta_f > 0.0:
+            points_value = int(math.floor(width_value / self.delta_f))
+            points_ok = points_value >= 10
+
+        if points_value is None:
+            self.output_points.setText("—")
+        else:
+            self.output_points.setText(str(points_value))
+        self._set_field_style(self.output_points, points_ok)
+
+        periods_value = duration * carrier
+        self.output_periods.setText(self._fmt(periods_value))
+
+        all_ok = duration_ok and carrier_ok and amplitude_ok and width_ok and points_ok
+        self.btn_ok.setEnabled(all_ok)
+
+    def _accept_if_valid(self):
+        if not self.btn_ok.isEnabled():
+            return
+
+        self.duration_value = float(self.input_duration.value())
+        self.carrier_freq_value = float(self.input_carrier.value())
+        self.amplitude_value = float(self.input_amplitude.value())
+        self.accept()
+
+
 class ColorSelectDialog(QDialog):
+
     def __init__(self, colors: np.ndarray, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Выбор цвета")
@@ -270,15 +422,20 @@ class MainWindow(QMainWindow):
         self.level_slider_active = False
         self.amplify_values_baseline: Optional[np.ndarray] = None
         self.amplify_undo_pushed = False
+        self.phase_shift_values_baseline: Optional[np.ndarray] = None
+        self.phase_shift_undo_pushed = False
         self.show_components_active = False
+
 
         self.spectrum_freq: Optional[np.ndarray] = None
         self.spectrum_amp: Optional[np.ndarray] = None
         self.spectrum_phase: Optional[np.ndarray] = None
         self.spectrum_real: Optional[np.ndarray] = None
         self.spectrum_imag: Optional[np.ndarray] = None
+        self.spectrum_total_points: Optional[int] = None
 
         self.t_half: Optional[float] = None
+
         self.n_points: Optional[int] = None
 
         self.freq_limit_min: Optional[float] = None
@@ -344,14 +501,19 @@ class MainWindow(QMainWindow):
         self.btn_add.clicked.connect(self._add_signal_flow)
         scan_layout.addWidget(self.btn_add)
 
+        self.btn_add_model = QPushButton("Добавить модельный сигнал")
+        self.btn_add_model.clicked.connect(self._add_model_signal)
+        scan_layout.addWidget(self.btn_add_model)
+
         root.addWidget(scan_box)
 
         fft_box = QGroupBox("Параметры Фурье")
         fft_layout = QVBoxLayout(fft_box)
-        self.label_dt = QLabel("Шаг по времени (T / N): —")
-        self.label_df = QLabel("Шаг по частоте (1 / T): —")
-        self.label_fs = QLabel("Частота дискретизации (N / T): —")
-        self.label_fmax = QLabel("Максимальная частота спектра (N / 2T): —")
+        self.label_dt = QLabel("Шаг по времени (T / N), сек: —")
+        self.label_df = QLabel("Шаг по частоте (1 / T), Гц: —")
+        self.label_fs = QLabel("Частота дискретизации (N / T), Гц: —")
+        self.label_fmax = QLabel("Максимальная частота спектра (N / 2T), Гц: —")
+
         fft_layout.addWidget(self.label_dt)
         fft_layout.addWidget(self.label_df)
         fft_layout.addWidget(self.label_fs)
@@ -376,7 +538,14 @@ class MainWindow(QMainWindow):
         row_max.addWidget(self.input_freq_max)
         limits_layout.addLayout(row_max)
 
+        row_samples = QHBoxLayout()
+        row_samples.addWidget(QLabel("Количество отсчётов"))
+        self.label_freq_samples_count = QLabel("—")
+        row_samples.addWidget(self.label_freq_samples_count)
+        limits_layout.addLayout(row_samples)
+
         self.btn_reset_freq_limits = QPushButton("Сбросить")
+
         self.btn_reset_freq_limits.clicked.connect(lambda: self._reset_frequency_limits(update_plot=True))
         limits_layout.addWidget(self.btn_reset_freq_limits)
 
@@ -452,13 +621,18 @@ class MainWindow(QMainWindow):
         self.level_slider.setSizePolicy(POLICY_FIXED, POLICY_EXPANDING)
         right.addWidget(self.level_slider, 1)
 
-        self.input_time_shift = QLineEdit()
+        self.spinbox_time_shift = QDoubleSpinBox()
+        self.spinbox_time_shift.setDecimals(6)
+        self.spinbox_time_shift.setRange(-1.0, 1.0)
+        self.spinbox_time_shift.setSingleStep(0.1)
+        self.spinbox_time_shift.setValue(0.0)
         self.label_time_shift = QLabel("Введите сдвиг в сек:")
         right.addWidget(self.label_time_shift)
-        right.addWidget(self.input_time_shift)
-        self.input_time_shift.hide()
+        right.addWidget(self.spinbox_time_shift)
+        self.spinbox_time_shift.hide()
         self.label_time_shift.hide()
-        self.input_time_shift.textChanged.connect(self._on_phase_shift_changed)
+        self.spinbox_time_shift.valueChanged.connect(self._on_phase_shift_changed)
+
 
         self.spinbox_amplify = QDoubleSpinBox()
         self.spinbox_amplify.setRange(-10.0, 10.0)
@@ -615,18 +789,18 @@ class MainWindow(QMainWindow):
         t_half, n_points = self._parse_params_input()
 
         if t_half is None or n_points is None:
-            self.label_dt.setText("Шаг по времени (T / N): —")
-            self.label_df.setText("Шаг по частоте (1 / T): —")
-            self.label_fs.setText("Частота дискретизации (N / T): —")
-            self.label_fmax.setText("Максимальная частота спектра (N / 2T): —")
+            self.label_dt.setText("Шаг по времени (T / N), сек: —")
+            self.label_df.setText("Шаг по частоте (1 / T), Гц: —")
+            self.label_fs.setText("Частота дискретизации (N / T), Гц: —")
+            self.label_fmax.setText("Максимальная частота спектра (N / 2T), Гц: —")
             return
 
         t_full = 2.0 * t_half
         if t_full <= 0.0:
-            self.label_dt.setText("Шаг по времени (T / N): —")
-            self.label_df.setText("Шаг по частоте (1 / T): —")
-            self.label_fs.setText("Частота дискретизации (N / T): —")
-            self.label_fmax.setText("Максимальная частота спектра (N / 2T): —")
+            self.label_dt.setText("Шаг по времени (T / N), сек: —")
+            self.label_df.setText("Шаг по частоте (1 / T), Гц: —")
+            self.label_fs.setText("Частота дискретизации (N / T), Гц: —")
+            self.label_fmax.setText("Максимальная частота спектра (N / 2T), Гц: —")
             return
 
         dt = t_full / n_points
@@ -634,10 +808,11 @@ class MainWindow(QMainWindow):
         fs = n_points / t_full
         fmax = n_points / (2.0 * t_full)
 
-        self.label_dt.setText(f"Шаг по времени (T / N): {self._format_param_value(dt)}")
-        self.label_df.setText(f"Шаг по частоте (1 / T): {self._format_param_value(df)}")
-        self.label_fs.setText(f"Частота дискретизации (N / T): {self._format_param_value(fs)}")
-        self.label_fmax.setText(f"Максимальная частота спектра (N / 2T): {self._format_param_value(fmax)}")
+        self.label_dt.setText(f"Шаг по времени (T / N), сек: {self._format_param_value(dt)}")
+        self.label_df.setText(f"Шаг по частоте (1 / T), Гц: {self._format_param_value(df)}")
+        self.label_fs.setText(f"Частота дискретизации (N / T), Гц: {self._format_param_value(fs)}")
+        self.label_fmax.setText(f"Максимальная частота спектра (N / 2T), Гц: {self._format_param_value(fmax)}")
+
 
     def _frequency_bounds_defaults(self) -> tuple[Optional[float], Optional[float]]:
         t_half, n_points = self._parse_params_input()
@@ -660,7 +835,38 @@ class MainWindow(QMainWindow):
         self.input_freq_min.blockSignals(False)
         self.input_freq_max.blockSignals(False)
 
+    def _clear_spectrum_span_selection(self):
+        if hasattr(self.spec_span_selector, "clear"):
+            self.spec_span_selector.clear()
+        elif hasattr(self.spec_span_selector, "extents"):
+            self.spec_span_selector.extents = (0.0, 0.0)
+
+    def _update_frequency_samples_count(self):
+        total_points = self.spectrum_total_points if self.spectrum_total_points is not None else self.n_points
+        if total_points is None:
+            self.label_freq_samples_count.setText("—")
+            self.label_freq_samples_count.setStyleSheet("")
+            return
+
+        points = total_points
+        if self.spectrum_freq is not None:
+            x = self.spectrum_freq
+            if self.checkbox_positive_freq_only.isChecked():
+                x = x[x >= 0]
+
+            f_min = self.freq_limit_min
+            f_max = self.freq_limit_max
+            if f_min is not None and f_max is not None and f_min < f_max:
+                mask = (x >= f_min) & (x <= f_max)
+                points = int(np.count_nonzero(mask))
+            else:
+                points = x.size
+
+        self.label_freq_samples_count.setText(str(points))
+        self.label_freq_samples_count.setStyleSheet("color: red;" if points < 10 else "")
+
     def _validate_frequency_limits_ui(self, f_min: Optional[float], f_max: Optional[float]) -> bool:
+
         valid = f_min is not None and f_max is not None and f_min < f_max
         min_style = "" if f_min is not None else "border: 1px solid red;"
         max_style = "" if f_max is not None else "border: 1px solid red;"
@@ -714,6 +920,8 @@ class MainWindow(QMainWindow):
             self.input_freq_max.blockSignals(False)
             self.input_freq_min.setStyleSheet("")
             self.input_freq_max.setStyleSheet("")
+            self._clear_spectrum_span_selection()
+            self._update_frequency_samples_count()
             return
 
         f_min, f_max = defaults
@@ -721,15 +929,20 @@ class MainWindow(QMainWindow):
         self.freq_limit_max = f_max
         self._set_frequency_limits_inputs(f_min, f_max)
         self._validate_frequency_limits_ui(f_min, f_max)
+        self._clear_spectrum_span_selection()
 
         if update_plot and self.spectrum_freq is not None:
             mode = self._current_spectrum_mode()
             if mode is not None:
                 self._plot_spectrum_mode(mode)
 
+        self._update_frequency_samples_count()
+
+
     def _on_frequency_limits_changed(self):
         f_min, f_max = self._parse_frequency_limits_input()
         if not self._validate_frequency_limits_ui(f_min, f_max):
+            self._update_frequency_samples_count()
             return
 
         self.freq_limit_min = f_min
@@ -740,11 +953,22 @@ class MainWindow(QMainWindow):
             if mode is not None:
                 self._plot_spectrum_mode(mode)
 
+        self._update_frequency_samples_count()
+
+
     def _on_params_changed(self):
         self._validate_params_ui()
         self._update_fourier_params_ui()
+
+        t_half, _ = self._parse_params_input()
+        step = (2.0 * t_half) / 20.0 if t_half is not None and t_half > 0 else 0.1
+        shift_limit = 2.0 * t_half if t_half is not None else 1.0
+        self.spinbox_time_shift.setSingleStep(max(1e-6, step))
+        self.spinbox_time_shift.setRange(-shift_limit, shift_limit)
+
         self._reset_frequency_limits(update_plot=False)
         self._update_buttons_state()
+
 
 
     def _clear_sum_and_spectrum(self):
@@ -756,7 +980,10 @@ class MainWindow(QMainWindow):
         self.spectrum_phase = None
         self.spectrum_real = None
         self.spectrum_imag = None
+        self.spectrum_total_points = None
         self.spec_plot.clear()
+        self._update_frequency_samples_count()
+
 
     def _apply_scan_params(self):
         t_half_new, n_points_new = self._parse_params_input()
@@ -830,7 +1057,9 @@ class MainWindow(QMainWindow):
                 checked_count += 1
 
         self.btn_add.setEnabled(params_applied and not params_changed)
+        self.btn_add_model.setEnabled(params_applied and not params_changed)
         self.btn_show_sum.setEnabled(params_applied and len(self.signals) > 0 and checked_count > 0)
+
 
 
 
@@ -1074,7 +1303,43 @@ class MainWindow(QMainWindow):
         self.signals.append(item)
         self._refresh_table()
 
+    def _add_model_signal(self):
+        t_half, n_points = self._parse_params()
+        if t_half is None or n_points is None:
+            self._show_error("Сначала примените корректные параметры T/2 и N.")
+            return
+
+        dialog = ModelSignalDialog(t_half, n_points, self)
+        if dialog.exec() != DIALOG_ACCEPTED:
+            return
+
+        duration = dialog.duration_value
+        carrier = dialog.carrier_freq_value
+        amplitude = dialog.amplitude_value
+
+        if duration is None or carrier is None or amplitude is None:
+            return
+
+        sigma = calc_model_sigma(duration)
+        if sigma is None:
+            self._show_error("Не удалось рассчитать sigma для модельного сигнала.")
+            return
+
+        x = build_time_axis(t_half, n_points)
+        signal_values = amplitude * np.exp(-(x ** 2) / (2.0 * sigma ** 2)) * np.cos(2.0 * math.pi * carrier * x)
+
+        signal_index = len(self.signals)
+        item = SignalItem(
+            name=f"Сигнал {signal_index + 1}",
+            color=default_signal_color(signal_index),
+            values=signal_values.astype(float),
+            raw_values=signal_values.astype(float).copy(),
+        )
+        self.signals.append(item)
+        self._refresh_table()
+
     def _show_selected_signal(self):
+
         row = self.table.currentRow()
         if row < 0 or row >= len(self.signals):
             return
@@ -1091,13 +1356,17 @@ class MainWindow(QMainWindow):
         self._clear_span_selection()
         self.level_slider.hide()
         self.level_slider.setValue(0)
-        self.input_time_shift.hide()
+        self.spinbox_time_shift.hide()
         self.label_time_shift.hide()
+        self.spinbox_time_shift.setValue(0.0)
+        self.phase_shift_values_baseline = None
+        self.phase_shift_undo_pushed = False
         self.spinbox_amplify.hide()
         self.label_amplify.hide()
         self.spinbox_amplify.setValue(1.0)
         self.amplify_values_baseline = None
         self.amplify_undo_pushed = False
+
 
         self._plot_edit_signal()
         self._update_buttons_state()
@@ -1136,12 +1405,16 @@ class MainWindow(QMainWindow):
             self.btn_amplify.setChecked(False)
             self.level_slider.hide()
             self.level_slider_active = False
-            self.input_time_shift.hide()
+            self.spinbox_time_shift.hide()
             self.label_time_shift.hide()
+            self.spinbox_time_shift.setValue(0.0)
+            self.phase_shift_values_baseline = None
+            self.phase_shift_undo_pushed = False
             self.spinbox_amplify.hide()
             self.label_amplify.hide()
             self.amplify_values_baseline = None
             self.amplify_undo_pushed = False
+
         else:
             self._clear_span_selection()
         self.span_selector.set_active(active)
@@ -1159,12 +1432,16 @@ class MainWindow(QMainWindow):
             self.level_slider.setValue(0)
             self.level_slider.show()
             self.edit_values_baseline = self.edit_values.copy() if self.edit_values is not None else None
-            self.input_time_shift.hide()
+            self.spinbox_time_shift.hide()
             self.label_time_shift.hide()
+            self.spinbox_time_shift.setValue(0.0)
+            self.phase_shift_values_baseline = None
+            self.phase_shift_undo_pushed = False
             self.spinbox_amplify.hide()
             self.label_amplify.hide()
             self.amplify_values_baseline = None
             self.amplify_undo_pushed = False
+
         else:
             self.level_slider_active = False
             self.level_slider.hide()
@@ -1183,72 +1460,80 @@ class MainWindow(QMainWindow):
             self.label_amplify.hide()
             self.amplify_values_baseline = None
             self.amplify_undo_pushed = False
-            self.input_time_shift.show()
+            self.phase_shift_values_baseline = self.edit_values.copy()
+            self.phase_shift_undo_pushed = False
+            self.spinbox_time_shift.blockSignals(True)
+            self.spinbox_time_shift.setValue(0.0)
+            self.spinbox_time_shift.blockSignals(False)
+            self.spinbox_time_shift.show()
             self.label_time_shift.show()
-            self.input_time_shift.setFocus()
+            self.spinbox_time_shift.setFocus()
+            self._validate_phase_shift()
         else:
-            self.input_time_shift.hide()
+            self.spinbox_time_shift.hide()
             self.label_time_shift.hide()
+            self.spinbox_time_shift.setValue(0.0)
+            self.phase_shift_values_baseline = None
+            self.phase_shift_undo_pushed = False
 
     def _on_phase_shift_changed(self):
         self._validate_phase_shift()
         self._apply_phase_shift()
 
     def _parse_phase_shift(self) -> Optional[float]:
-        text = self.input_time_shift.text().strip()
-        if not text:
-            return 0.0
-        
         try:
-            val = float(text)
-            return val
+            return float(self.spinbox_time_shift.value())
         except Exception:
             return None
-    
+
     def _validate_phase_shift(self):
         t_half, _ = self._parse_params()
         delta_t = self._parse_phase_shift()
-        
-        if t_half is None:
-            self.input_time_shift.setStyleSheet("border: 1px solid red;")
-        elif delta_t is None or delta_t < 0:
-            self.input_time_shift.setStyleSheet("border: 1px solid red;")
-        elif delta_t > t_half:
-            self.input_time_shift.setStyleSheet("border: 1px solid red;")
+
+        if t_half is None or delta_t is None:
+            self.spinbox_time_shift.setStyleSheet("border: 1px solid red;")
+            return
+
+        limit = 2.0 * t_half
+        if abs(delta_t) > limit:
+            self.spinbox_time_shift.setStyleSheet("border: 1px solid red;")
         else:
-            self.input_time_shift.setStyleSheet("")
-    
+            self.spinbox_time_shift.setStyleSheet("")
+
     def _apply_phase_shift(self):
         delta_t = self._parse_phase_shift()
         t_half, _ = self._parse_params()
-        
-        if t_half is None:
+
+        if t_half is None or delta_t is None:
             return
 
-        # Пустая строка или 0 = нет сдвига
-        if delta_t is None:
+        limit = 2.0 * t_half
+        if abs(delta_t) > limit:
             return
 
-        if delta_t < 0 or delta_t > t_half:
-            return
-        
-        if self.edit_values is None:
+        if self.edit_values is None or self.phase_shift_values_baseline is None:
             return
 
-        n = len(self.edit_values)
+        n = len(self.phase_shift_values_baseline)
+        if n < 2:
+            return
+
         t = build_time_axis(t_half, n)
         delta_t_sample = abs(t[1] - t[0])
         n_steps = int(round(delta_t / delta_t_sample))
-        
-        signal_shifted = self.edit_values.copy()
-        shifted_values = np.roll(signal_shifted, n_steps)
-        
-        # Сохраняем старое значение в undo stack
-        if not np.array_equal(shifted_values, self.edit_values):
-            self.undo_stack.append(self.edit_values.copy())
-            self.edit_values = shifted_values
-            self._plot_edit_signal()
-            self._update_buttons_state()
+        shifted_values = np.roll(self.phase_shift_values_baseline, n_steps)
+
+        if np.array_equal(shifted_values, self.edit_values):
+            return
+
+        if not self.phase_shift_undo_pushed:
+            self.undo_stack.append(self.phase_shift_values_baseline.copy())
+            self.phase_shift_undo_pushed = True
+
+        self.edit_values = shifted_values
+        self._plot_edit_signal()
+        self._update_buttons_state()
+
 
     def _toggle_amplify_mode(self):
         active = self.btn_amplify.isChecked() and self.edit_values is not None
@@ -1263,10 +1548,14 @@ class MainWindow(QMainWindow):
             self.level_slider_active = False
             self.level_slider.hide()
 
-            self.input_time_shift.hide()
+            self.spinbox_time_shift.hide()
             self.label_time_shift.hide()
+            self.spinbox_time_shift.setValue(0.0)
+            self.phase_shift_values_baseline = None
+            self.phase_shift_undo_pushed = False
 
             self.amplify_values_baseline = self.edit_values.copy()
+
             self.amplify_undo_pushed = False
 
             self.spinbox_amplify.blockSignals(True)
@@ -1473,10 +1762,13 @@ class MainWindow(QMainWindow):
         self.spectrum_phase = np.angle(spectrum)
         self.spectrum_real = np.real(spectrum)
         self.spectrum_imag = np.imag(spectrum)
+        self.spectrum_total_points = int(freq.size)
 
         self.btn_amp.setChecked(True)
         self._plot_spectrum_mode("amp")
+        self._update_frequency_samples_count()
         self._update_buttons_state()
+
 
     def _save_spectrum_plot(self):
         if self.spectrum_freq is None:
@@ -1549,6 +1841,9 @@ class MainWindow(QMainWindow):
         mode = self._current_spectrum_mode()
         if mode is not None:
             self._plot_spectrum_mode(mode)
+
+        self._update_frequency_samples_count()
+
 
     def _plot_spectrum_mode(self, mode: str):
         if self.spectrum_freq is None:
