@@ -1,4 +1,5 @@
-﻿import math
+﻿import json
+import math
 import os
 import sys
 import random
@@ -14,8 +15,9 @@ from skimage import io as skio
 
 try:
     from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QColor, QIcon, QPixmap
+    from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap
     from PyQt6.QtWidgets import (
+
         QAbstractItemView,
         QApplication,
         QButtonGroup,
@@ -39,6 +41,7 @@ try:
         QSlider,
         QTableWidget,
         QTableWidgetItem,
+        QTextEdit,
         QVBoxLayout,
         QWidget,
     )
@@ -63,6 +66,8 @@ except ImportError:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QColor, QIcon, QPixmap
     from PyQt5.QtWidgets import (
+        QAction,
+
         QAbstractItemView,
         QApplication,
         QButtonGroup,
@@ -85,6 +90,7 @@ except ImportError:
         QSlider,
         QTableWidget,
         QTableWidgetItem,
+        QTextEdit,
         QVBoxLayout,
         QWidget,
         #QSpinBox,
@@ -405,6 +411,19 @@ class MplView(QWidget):
         self.canvas.draw_idle()
 
 
+class HelpDialog(QDialog):
+    def __init__(self, markdown_text: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Справка")
+        self.resize(900, 700)
+
+        layout = QVBoxLayout(self)
+        viewer = QTextEdit(self)
+        viewer.setReadOnly(True)
+        viewer.setMarkdown(markdown_text)
+        layout.addWidget(viewer)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -441,17 +460,23 @@ class MainWindow(QMainWindow):
         self.freq_limit_min: Optional[float] = None
         self.freq_limit_max: Optional[float] = None
 
+        self.current_project_path: Optional[str] = None
+
         self._build_ui()
+
         self._update_fourier_params_ui()
         self._reset_frequency_limits(update_plot=False)
         self._update_buttons_state()
 
 
     def _build_ui(self):
+        self._build_menu_bar()
+
         central = QWidget()
         self.setCentralWidget(central)
 
         grid = QGridLayout(central)
+
 
         self.sidebar_box = self._build_sidebar_panel()
         self.signals_box = self._build_signals_panel()
@@ -471,8 +496,29 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(2, 1)
 
+    def _build_menu_bar(self):
+        menu_bar = self.menuBar()
+
+        file_menu = menu_bar.addMenu("Файл")
+        action_save = QAction("Сохранить проект", self)
+        action_save_as = QAction("Сохранить проект как", self)
+        action_open = QAction("Открыть проект из файла", self)
+
+        action_save.triggered.connect(self._save_project)
+        action_save_as.triggered.connect(self._save_project_as)
+        action_open.triggered.connect(self._open_project)
+
+        file_menu.addAction(action_save)
+        file_menu.addAction(action_save_as)
+        file_menu.addAction(action_open)
+
+        help_menu = menu_bar.addMenu("Справка")
+        action_show_help = QAction("Открыть документацию", self)
+        action_show_help.triggered.connect(self._show_help)
+        help_menu.addAction(action_show_help)
 
     def _build_sidebar_panel(self) -> QGroupBox:
+
         box = QGroupBox("Параметры")
         root = QVBoxLayout(box)
 
@@ -753,8 +799,171 @@ class MainWindow(QMainWindow):
     def _show_error(self, text: str):
         QMessageBox.warning(self, "Ошибка", text)
 
+    def _signal_to_dict(self, sig: SignalItem) -> dict:
+        return {
+            "name": sig.name,
+            "color": sig.color.name(),
+            "values": [float(v) for v in sig.values.tolist()],
+        }
+
+    def _serialize_project(self) -> dict:
+        t_half, n_points = self._parse_params()
+        return {
+            "version": 1,
+            "t_half": t_half,
+            "n_points": n_points,
+            "signals": [self._signal_to_dict(sig) for sig in self.signals],
+        }
+
+    def _validate_project_payload(self, payload: object) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        if "signals" not in payload:
+            return False
+        signals = payload.get("signals")
+        if not isinstance(signals, list):
+            return False
+
+        t_half = payload.get("t_half")
+        n_points = payload.get("n_points")
+
+        if t_half is None or not isinstance(t_half, (int, float)) or float(t_half) < 0:
+            return False
+        if n_points is None or not isinstance(n_points, int) or n_points <= 0:
+            return False
+
+        for s in signals:
+            if not isinstance(s, dict):
+                return False
+            name = s.get("name")
+            color = s.get("color")
+            values = s.get("values")
+
+            if not isinstance(name, str):
+                return False
+            if not isinstance(color, str):
+                return False
+            if not isinstance(values, list):
+                return False
+            if len(values) != int(n_points):
+                return False
+            if not all(isinstance(v, (int, float)) for v in values):
+                return False
+
+            qcolor = QColor(color)
+            if not qcolor.isValid():
+                return False
+
+        return True
+
+    def _save_project(self):
+        if self.current_project_path:
+            self._save_project_to_path(self.current_project_path)
+            return
+        self._save_project_as()
+
+    def _save_project_as(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить проект",
+            "project.json",
+            "JSON files (*.json)",
+        )
+        if not file_path:
+            return
+
+        if not file_path.lower().endswith(".json"):
+            file_path += ".json"
+
+        self._save_project_to_path(file_path)
+
+    def _save_project_to_path(self, file_path: str):
+        payload = self._serialize_project()
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._show_error(f"Не удалось сохранить проект: {exc}")
+            return
+
+        self.current_project_path = file_path
+
+    def _open_project(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Открыть проект",
+            "",
+            "JSON files (*.json)",
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            self._show_error("некорректная структура  файла")
+            return
+
+        if not self._validate_project_payload(payload):
+            self._show_error("некорректная структура  файла")
+            return
+
+        t_half = float(payload["t_half"])
+        n_points = int(payload["n_points"])
+
+        self.t_half = t_half
+        self.n_points = n_points
+
+        self.input_t_half.blockSignals(True)
+        self.input_n.blockSignals(True)
+        self.input_t_half.setText(self._format_param_value(t_half))
+        self.input_n.setText(str(n_points))
+        self.input_t_half.blockSignals(False)
+        self.input_n.blockSignals(False)
+
+        self.signals.clear()
+        for s in payload["signals"]:
+            values = np.array(s["values"], dtype=float)
+            self.signals.append(
+                SignalItem(
+                    name=s["name"].strip() or f"Сигнал {len(self.signals) + 1}",
+                    color=QColor(s["color"]),
+                    values=values.copy(),
+                    raw_values=values.copy(),
+                )
+            )
+
+        self.current_project_path = file_path
+
+        self.current_edit_index = None
+        self.edit_values = None
+        self.undo_stack.clear()
+        self.edit_plot.clear()
+
+        self._clear_sum_and_spectrum()
+        self._validate_params_ui()
+        self._update_fourier_params_ui()
+        self._reset_frequency_limits(update_plot=False)
+        self._refresh_table()
+        self._update_buttons_state()
+
+    def _show_help(self):
+        docs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs.md")
+        try:
+            with open(docs_path, "r", encoding="utf-8") as f:
+                markdown_text = f.read()
+        except Exception as exc:
+            self._show_error(f"Не удалось открыть справку: {exc}")
+            return
+
+        dialog = HelpDialog(markdown_text, self)
+        dialog.exec()
+
     def _format_param_value(self, value: float) -> str:
         return f"{value:.6g}"
+
 
     def _parse_params_input(self) -> tuple[Optional[float], Optional[int]]:
         t_half = None
