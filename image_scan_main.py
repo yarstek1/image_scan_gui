@@ -9,6 +9,7 @@ from scipy.fft import fft, fftfreq, fftshift
 from skimage import io as skio
 
 #Добавить возможность смотреть несколько спектров
+#TO DO: Связать с результатами статьи!!!
 
 try:
     from PyQt6.QtCore import Qt
