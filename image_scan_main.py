@@ -137,6 +137,24 @@ STANDARD_PALETTE_COLORS = [
     QColor("#039be5"), QColor("#8d6e63"), QColor("#d81b60"), QColor("#9e9d24"), QColor("#5d4037"),
 ]
 
+TIME_UNIT_TO_SECONDS = {
+    "s": 1.0,
+    "ms": 1e-3,
+    "us": 1e-6,
+}
+
+TIME_UNIT_LABELS = {
+    "s": "с",
+    "ms": "мс",
+    "us": "мкс",
+}
+
+FREQ_UNIT_LABELS = {
+    "s": "Гц",
+    "ms": "кГц",
+    "us": "МГц",
+}
+
 
 @dataclass
 class SignalItem:
@@ -193,12 +211,13 @@ def calc_model_sigma(duration: float) -> Optional[float]:
     if duration <= 0.0:
         return None
 
-    log_level = math.log(0.01)
-    sigma_sq = -duration / log_level
-    if sigma_sq <= 0.0:
+    level = 0.01
+    level_log = -2.0 * math.log(level)
+    if level_log <= 0.0:
         return None
 
-    return math.sqrt(sigma_sq)
+    half_duration = duration / 2.0
+    return half_duration / math.sqrt(level_log)
 
 
 def calc_model_spectrum_width(duration: float) -> Optional[float]:
@@ -206,40 +225,56 @@ def calc_model_spectrum_width(duration: float) -> Optional[float]:
     if sigma is None or sigma <= 0.0:
         return None
 
-    return 1.0 / (2.0 * math.pi * sigma)
+    level = 0.01
+    level_log = -2.0 * math.log(level)
+    if level_log <= 0.0:
+        return None
+
+    sigma_f = 1.0 / (2.0 * math.pi * sigma)
+    return 2.0 * sigma_f * math.sqrt(level_log)
+
 
 
 class ModelSignalDialog(QDialog):
-    def __init__(self, t_half: float, n_points: int, parent: Optional[QWidget] = None):
+    def __init__(self, t_half_sec: float, n_points: int, time_unit_key: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Добавить модельный сигнал")
         self.setModal(True)
+        self.resize(900, 700)
 
-        self.t_half = t_half
+        self.t_half_sec = t_half_sec
         self.n_points = n_points
+        self.time_unit_key = time_unit_key
 
-        self.duration_value: Optional[float] = None
-        self.carrier_freq_value: Optional[float] = None
+        self.duration_value: Optional[float] = None  # seconds
+        self.carrier_freq_value: Optional[float] = None  # Hz
         self.amplitude_value: Optional[float] = None
 
-        t_full = 2.0 * self.t_half
-        self.delta_f = 1.0 / t_full if t_full > 0 else None
-        self.f_max = self.n_points / (2.0 * t_full) if t_full > 0 else None
+        self.delta_f_hz = 1.0 / (2.0 * self.t_half_sec) if self.t_half_sec > 0.0 else None
+        self.f_max_hz = self.n_points / (4.0 * self.t_half_sec) if self.t_half_sec > 0.0 else None
 
         root = QVBoxLayout(self)
         form = QFormLayout()
 
+        self.combo_time_unit = QComboBox(self)
+        self.combo_time_unit.addItem("с", "s")
+        self.combo_time_unit.addItem("мс", "ms")
+        self.combo_time_unit.addItem("мкс", "us")
+        idx = self.combo_time_unit.findData(self.time_unit_key)
+        if idx >= 0:
+            self.combo_time_unit.setCurrentIndex(idx)
+        form.addRow("Единицы времени", self.combo_time_unit)
+
+
+        self.label_duration = QLabel()
         self.input_duration = QDoubleSpinBox(self)
         self.input_duration.setDecimals(6)
-        self.input_duration.setRange(0.0, max(0.0, t_full))
-        self.input_duration.setSingleStep(max(0.001, t_full / 200.0 if t_full > 0 else 0.001))
-        form.addRow("Длительность импульса, сек", self.input_duration)
+        form.addRow(self.label_duration, self.input_duration)
 
+        self.label_carrier = QLabel()
         self.input_carrier = QDoubleSpinBox(self)
         self.input_carrier.setDecimals(6)
-        self.input_carrier.setRange(0.0, max(0.0, self.f_max if self.f_max is not None else 0.0))
-        self.input_carrier.setSingleStep(max(0.001, (self.f_max or 1.0) / 100.0))
-        form.addRow("Несущая частота, Гц", self.input_carrier)
+        form.addRow(self.label_carrier, self.input_carrier)
 
         self.input_amplitude = QDoubleSpinBox(self)
         self.input_amplitude.setDecimals(6)
@@ -248,9 +283,10 @@ class ModelSignalDialog(QDialog):
         self.input_amplitude.setValue(1.0)
         form.addRow("Амплитуда, ед", self.input_amplitude)
 
+        self.label_width = QLabel()
         self.output_width = QLineEdit(self)
         self.output_width.setReadOnly(True)
-        form.addRow("Ширина спектра на уровне 0.01, Гц", self.output_width)
+        form.addRow(self.label_width, self.output_width)
 
         self.output_points = QLineEdit(self)
         self.output_points.setReadOnly(True)
@@ -261,6 +297,9 @@ class ModelSignalDialog(QDialog):
         form.addRow("Количество периодов на импульс", self.output_periods)
 
         root.addLayout(form)
+
+        self.preview_view = MplView(self)
+        root.addWidget(self.preview_view, 1)
 
         buttons = QHBoxLayout()
         self.btn_ok = QPushButton("Ок")
@@ -277,8 +316,29 @@ class ModelSignalDialog(QDialog):
         self.input_duration.valueChanged.connect(self._recalculate)
         self.input_carrier.valueChanged.connect(self._recalculate)
         self.input_amplitude.valueChanged.connect(self._recalculate)
+        self.combo_time_unit.currentIndexChanged.connect(self._on_time_unit_changed)
+
+        self._update_units_ui(convert_values=False)
 
         self._recalculate()
+
+    def _time_scale(self) -> float:
+        return TIME_UNIT_TO_SECONDS[self.time_unit_key]
+
+    def _freq_scale(self) -> float:
+        return 1.0 / self._time_scale()
+
+    def _duration_to_seconds(self, duration_display: float) -> float:
+        return duration_display * self._time_scale()
+
+    def _carrier_to_hz(self, carrier_display: float) -> float:
+        return carrier_display * self._freq_scale()
+
+    def _duration_from_seconds(self, duration_sec: float) -> float:
+        return duration_sec / self._time_scale()
+
+    def _carrier_from_hz(self, carrier_hz: float) -> float:
+        return carrier_hz / self._freq_scale()
 
     def _set_field_style(self, widget: QWidget, ok: bool):
         widget.setStyleSheet("" if ok else "border: 1px solid red;")
@@ -286,30 +346,87 @@ class ModelSignalDialog(QDialog):
     def _fmt(self, value: float) -> str:
         return f"{value:.6g}"
 
+    def _update_units_ui(self, convert_values: bool):
+        prev_duration_sec = self._duration_to_seconds(float(self.input_duration.value())) if convert_values else 0.0
+        prev_carrier_hz = self._carrier_to_hz(float(self.input_carrier.value())) if convert_values else 0.0
+
+        self.label_duration.setText(f"Длительность импульса, {TIME_UNIT_LABELS[self.time_unit_key]}")
+        self.label_carrier.setText(f"Несущая частота, {FREQ_UNIT_LABELS[self.time_unit_key]}")
+        self.label_width.setText(f"Ширина спектра на уровне 0.01, {FREQ_UNIT_LABELS[self.time_unit_key]}")
+
+        t_half_display = self._duration_from_seconds(self.t_half_sec)
+        t_full_display = 2.0 * t_half_display
+        f_max_display = self._carrier_from_hz(self.f_max_hz) if self.f_max_hz is not None else 0.0
+
+        self.input_duration.blockSignals(True)
+        self.input_duration.setRange(0.0, max(0.0, t_full_display))
+        self.input_duration.setSingleStep(max(0.001, t_full_display / 200.0 if t_full_display > 0 else 0.001))
+
+        self.input_carrier.blockSignals(True)
+        self.input_carrier.setRange(0.0, max(0.0, f_max_display))
+        self.input_carrier.setSingleStep(max(0.001, (f_max_display or 1.0) / 100.0))
+
+        if convert_values:
+            self.input_duration.setValue(min(self.input_duration.maximum(), self._duration_from_seconds(prev_duration_sec)))
+            self.input_carrier.setValue(min(self.input_carrier.maximum(), self._carrier_from_hz(prev_carrier_hz)))
+
+        self.input_duration.blockSignals(False)
+        self.input_carrier.blockSignals(False)
+
+    def _on_time_unit_changed(self):
+        data = self.combo_time_unit.currentData()
+        self.time_unit_key = data if isinstance(data, str) and data in TIME_UNIT_TO_SECONDS else "s"
+        self._update_units_ui(convert_values=True)
+        self._recalculate()
+
+    def _plot_preview(self, duration_sec: float, carrier_hz: float, amplitude: float):
+        self.preview_view.ax.clear()
+
+        sigma_sec = calc_model_sigma(duration_sec)
+        if sigma_sec is None:
+            self.preview_view.canvas.draw_idle()
+            return
+
+        x_sec = build_time_axis(self.t_half_sec, self.n_points)
+        signal_values = amplitude * np.exp(-(x_sec ** 2) / (2.0 * sigma_sec ** 2)) * np.cos(2.0 * math.pi * carrier_hz * x_sec)
+        x_display = x_sec / self._time_scale()
+
+        self.preview_view.ax.plot(x_display, signal_values, color="tab:blue", linewidth=1.5)
+        self.preview_view.ax.set_title("Предпросмотр модельного сигнала")
+        self.preview_view.ax.set_xlabel(f"t, {TIME_UNIT_LABELS[self.time_unit_key]}")
+        self.preview_view.ax.grid(True)
+        self.preview_view.figure.tight_layout()
+        self.preview_view.canvas.draw_idle()
+
     def _recalculate(self):
-        duration = float(self.input_duration.value())
-        carrier = float(self.input_carrier.value())
+        duration_display = float(self.input_duration.value())
+        carrier_display = float(self.input_carrier.value())
         amplitude = float(self.input_amplitude.value())
 
-        duration_ok = duration >= 0.0 and duration <= 2.0 * self.t_half
-        carrier_ok = self.f_max is not None and carrier >= 0.0 and carrier <= self.f_max
+        duration_sec = self._duration_to_seconds(duration_display)
+        carrier_hz = self._carrier_to_hz(carrier_display)
+
+        duration_ok = duration_sec >= 0.0 and duration_sec <= 2.0 * self.t_half_sec
+        carrier_ok = self.f_max_hz is not None and carrier_hz >= 0.0 and carrier_hz <= self.f_max_hz
         amplitude_ok = amplitude >= 0.0
 
-        width_value = calc_model_spectrum_width(duration)
+        width_hz = calc_model_spectrum_width(duration_sec)
         width_ok = False
-        if width_value is not None and self.delta_f is not None and self.f_max is not None:
-            width_ok = self.delta_f <= width_value <= self.f_max
+        if width_hz is not None and self.delta_f_hz is not None and self.f_max_hz is not None:
+            width_ok = self.delta_f_hz <= width_hz <= self.f_max_hz
 
-        if width_value is None:
+        if width_hz is None:
             self.output_width.setText("—")
+            width_display = None
         else:
-            self.output_width.setText(self._fmt(width_value))
+            width_display = self._carrier_from_hz(width_hz)
+            self.output_width.setText(self._fmt(width_display))
         self._set_field_style(self.output_width, width_ok)
 
         points_value = None
         points_ok = False
-        if width_value is not None and self.delta_f is not None and self.delta_f > 0.0:
-            points_value = int(math.floor(width_value / self.delta_f))
+        if width_hz is not None and self.delta_f_hz is not None and self.delta_f_hz > 0.0:
+            points_value = int(max(1, round(width_hz / self.delta_f_hz)))
             points_ok = points_value >= 10
 
         if points_value is None:
@@ -318,8 +435,10 @@ class ModelSignalDialog(QDialog):
             self.output_points.setText(str(points_value))
         self._set_field_style(self.output_points, points_ok)
 
-        periods_value = duration * carrier
+        periods_value = duration_sec * carrier_hz
         self.output_periods.setText(self._fmt(periods_value))
+
+        self._plot_preview(duration_sec, carrier_hz, amplitude)
 
         all_ok = duration_ok and carrier_ok and amplitude_ok and width_ok and points_ok
         self.btn_ok.setEnabled(all_ok)
@@ -328,10 +447,12 @@ class ModelSignalDialog(QDialog):
         if not self.btn_ok.isEnabled():
             return
 
-        self.duration_value = float(self.input_duration.value())
-        self.carrier_freq_value = float(self.input_carrier.value())
+        self.duration_value = self._duration_to_seconds(float(self.input_duration.value()))
+        self.carrier_freq_value = self._carrier_to_hz(float(self.input_carrier.value()))
         self.amplitude_value = float(self.input_amplitude.value())
         self.accept()
+
+
 
 
 class ColorSelectDialog(QDialog):
@@ -364,7 +485,7 @@ class ColorSelectDialog(QDialog):
 
 
 class PreviewDialog(QDialog):
-    def __init__(self, x: np.ndarray, y: np.ndarray, parent: Optional[QWidget] = None):
+    def __init__(self, x: np.ndarray, y: np.ndarray, x_label: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Предпросмотр восстановленного сигнала")
         self.setModal(True)
@@ -376,13 +497,16 @@ class PreviewDialog(QDialog):
         ax = fig.add_subplot(111)
         ax.plot(x, y, color="tab:blue", linewidth=1.5)
         ax.set_title("Восстановленный сигнал")
+        ax.set_xlabel(x_label)
         ax.grid(True)
+        fig.tight_layout()
 
         layout.addWidget(canvas)
 
         btn_ok = QPushButton("Подтвердить")
         btn_ok.clicked.connect(self.accept)
         layout.addWidget(btn_ok)
+
 
 
 class SignalPaletteDialog(QColorDialog):
@@ -455,8 +579,9 @@ class MainWindow(QMainWindow):
         self.spectrum_total_points: Optional[int] = None
 
         self.t_half: Optional[float] = None
-
         self.n_points: Optional[int] = None
+        self.time_unit_key = "s"
+
 
         self.freq_limit_min: Optional[float] = None
         self.freq_limit_max: Optional[float] = None
@@ -464,8 +589,9 @@ class MainWindow(QMainWindow):
         self.current_project_path: Optional[str] = None
 
         self._build_ui()
-
+        self._update_unit_labels()
         self._update_fourier_params_ui()
+
         self._reset_frequency_limits(update_plot=False)
         self._update_buttons_state()
 
@@ -526,14 +652,26 @@ class MainWindow(QMainWindow):
         scan_box = QGroupBox("Параметры развертки")
         scan_layout = QVBoxLayout(scan_box)
 
+        row_units = QHBoxLayout()
+        row_units.addWidget(QLabel("Единицы времени"))
+        self.combo_time_unit = QComboBox()
+        self.combo_time_unit.addItem("с", "s")
+        self.combo_time_unit.addItem("мс", "ms")
+        self.combo_time_unit.addItem("мкс", "us")
+        self.combo_time_unit.currentIndexChanged.connect(self._on_time_unit_changed)
+        row_units.addWidget(self.combo_time_unit)
+        scan_layout.addLayout(row_units)
+
         row_t = QHBoxLayout()
-        row_t.addWidget(QLabel("T/2, сек"))
+        self.label_t_half = QLabel("T/2, с")
+        row_t.addWidget(self.label_t_half)
         self.input_t_half = QLineEdit()
         self.input_t_half.textChanged.connect(self._on_params_changed)
         row_t.addWidget(self.input_t_half)
         scan_layout.addLayout(row_t)
 
         row_n = QHBoxLayout()
+
         row_n.addWidget(QLabel("Количество отсчетов N"))
         self.input_n = QLineEdit()
         self.input_n.textChanged.connect(self._on_params_changed)
@@ -556,10 +694,11 @@ class MainWindow(QMainWindow):
 
         fft_box = QGroupBox("Параметры Фурье")
         fft_layout = QVBoxLayout(fft_box)
-        self.label_dt = QLabel("Шаг по времени (T / N), сек: —")
-        self.label_df = QLabel("Шаг по частоте (1 / T), Гц: —")
-        self.label_fs = QLabel("Частота дискретизации (N / T), Гц: —")
-        self.label_fmax = QLabel("Максимальная частота спектра (N / 2T), Гц: —")
+        self.label_dt = QLabel()
+        self.label_df = QLabel()
+        self.label_fs = QLabel()
+        self.label_fmax = QLabel()
+
 
         fft_layout.addWidget(self.label_dt)
         fft_layout.addWidget(self.label_df)
@@ -572,15 +711,19 @@ class MainWindow(QMainWindow):
         limits_layout = QVBoxLayout(limits_box)
 
         row_min = QHBoxLayout()
-        row_min.addWidget(QLabel("Нижняя, Гц"))
+        self.label_freq_min = QLabel()
+        row_min.addWidget(self.label_freq_min)
         self.input_freq_min = QLineEdit()
+
         self.input_freq_min.textChanged.connect(self._on_frequency_limits_changed)
         row_min.addWidget(self.input_freq_min)
         limits_layout.addLayout(row_min)
 
         row_max = QHBoxLayout()
-        row_max.addWidget(QLabel("Верхняя, Гц"))
+        self.label_freq_max = QLabel()
+        row_max.addWidget(self.label_freq_max)
         self.input_freq_max = QLineEdit()
+
         self.input_freq_max.textChanged.connect(self._on_frequency_limits_changed)
         row_max.addWidget(self.input_freq_max)
         limits_layout.addLayout(row_max)
@@ -919,7 +1062,7 @@ class MainWindow(QMainWindow):
 
         self.input_t_half.blockSignals(True)
         self.input_n.blockSignals(True)
-        self.input_t_half.setText(self._format_param_value(t_half))
+        self.input_t_half.setText(self._format_param_value(self._seconds_to_time(t_half)))
         self.input_n.setText(str(n_points))
         self.input_t_half.blockSignals(False)
         self.input_n.blockSignals(False)
@@ -965,15 +1108,45 @@ class MainWindow(QMainWindow):
     def _format_param_value(self, value: float) -> str:
         return f"{value:.6g}"
 
+    def _time_scale(self) -> float:
+        return TIME_UNIT_TO_SECONDS[self.time_unit_key]
+
+    def _freq_scale(self) -> float:
+        return 1.0 / self._time_scale()
+
+    def _time_label(self) -> str:
+        return TIME_UNIT_LABELS[self.time_unit_key]
+
+    def _freq_label(self) -> str:
+        return FREQ_UNIT_LABELS[self.time_unit_key]
+
+    def _time_to_seconds(self, value: float) -> float:
+        return value * self._time_scale()
+
+    def _seconds_to_time(self, value_sec: float) -> float:
+        return value_sec / self._time_scale()
+
+    def _hz_to_display_freq(self, value_hz: float) -> float:
+        return value_hz / self._freq_scale()
+
+    def _display_freq_to_hz(self, value_display: float) -> float:
+        return value_display * self._freq_scale()
+
+    def _update_unit_labels(self):
+        self.label_t_half.setText(f"T/2, {self._time_label()}")
+        self.label_freq_min.setText(f"Нижняя, {self._freq_label()}")
+        self.label_freq_max.setText(f"Верхняя, {self._freq_label()}")
+        self.label_time_shift.setText(f"Введите сдвиг в {self._time_label()}:")
+
 
     def _parse_params_input(self) -> tuple[Optional[float], Optional[int]]:
-        t_half = None
+        t_half_sec = None
         n_points = None
 
         try:
             val = float(self.input_t_half.text().strip())
             if val >= 0:
-                t_half = val
+                t_half_sec = self._time_to_seconds(val)
         except Exception:
             pass
 
@@ -984,58 +1157,64 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        return t_half, n_points
+        return t_half_sec, n_points
 
     def _parse_params(self) -> tuple[Optional[float], Optional[int]]:
         return self.t_half, self.n_points
 
     def _validate_params_ui(self):
-        t_half, n_points = self._parse_params_input()
+        t_half_sec, n_points = self._parse_params_input()
 
-        self.input_t_half.setStyleSheet("" if t_half is not None else "border: 1px solid red;")
+        self.input_t_half.setStyleSheet("" if t_half_sec is not None else "border: 1px solid red;")
         self.input_n.setStyleSheet("" if n_points is not None else "border: 1px solid red;")
 
     def _update_fourier_params_ui(self):
-        t_half, n_points = self._parse_params_input()
+        t_half_sec, n_points = self._parse_params_input()
 
-        if t_half is None or n_points is None:
-            self.label_dt.setText("Шаг по времени (T / N), сек: —")
-            self.label_df.setText("Шаг по частоте (1 / T), Гц: —")
-            self.label_fs.setText("Частота дискретизации (N / T), Гц: —")
-            self.label_fmax.setText("Максимальная частота спектра (N / 2T), Гц: —")
+        if t_half_sec is None or n_points is None:
+            self.label_dt.setText(f"Шаг по времени (T / N), {self._time_label()}: —")
+            self.label_df.setText(f"Шаг по частоте (1 / T), {self._freq_label()}: —")
+            self.label_fs.setText(f"Частота дискретизации (N / T), {self._freq_label()}: —")
+            self.label_fmax.setText(f"Максимальная частота спектра (N / 2T), {self._freq_label()}: —")
             return
 
-        t_full = 2.0 * t_half
-        if t_full <= 0.0:
-            self.label_dt.setText("Шаг по времени (T / N), сек: —")
-            self.label_df.setText("Шаг по частоте (1 / T), Гц: —")
-            self.label_fs.setText("Частота дискретизации (N / T), Гц: —")
-            self.label_fmax.setText("Максимальная частота спектра (N / 2T), Гц: —")
+        t_full_sec = 2.0 * t_half_sec
+        if t_full_sec <= 0.0:
+            self.label_dt.setText(f"Шаг по времени (T / N), {self._time_label()}: —")
+            self.label_df.setText(f"Шаг по частоте (1 / T), {self._freq_label()}: —")
+            self.label_fs.setText(f"Частота дискретизации (N / T), {self._freq_label()}: —")
+            self.label_fmax.setText(f"Максимальная частота спектра (N / 2T), {self._freq_label()}: —")
             return
 
-        dt = t_full / n_points
-        df = 1.0 / t_full
-        fs = n_points / t_full
-        fmax = n_points / (2.0 * t_full)
+        dt_sec = t_full_sec / n_points
+        df_hz = 1.0 / t_full_sec
+        fs_hz = n_points / t_full_sec
+        fmax_hz = n_points / (2.0 * t_full_sec)
 
-        self.label_dt.setText(f"Шаг по времени (T / N), сек: {self._format_param_value(dt)}")
-        self.label_df.setText(f"Шаг по частоте (1 / T), Гц: {self._format_param_value(df)}")
-        self.label_fs.setText(f"Частота дискретизации (N / T), Гц: {self._format_param_value(fs)}")
-        self.label_fmax.setText(f"Максимальная частота спектра (N / 2T), Гц: {self._format_param_value(fmax)}")
+        dt_display = self._seconds_to_time(dt_sec)
+        df_display = self._hz_to_display_freq(df_hz)
+        fs_display = self._hz_to_display_freq(fs_hz)
+        fmax_display = self._hz_to_display_freq(fmax_hz)
 
+        self.label_dt.setText(f"Шаг по времени (T / N), {self._time_label()}: {self._format_param_value(dt_display)}")
+        self.label_df.setText(f"Шаг по частоте (1 / T), {self._freq_label()}: {self._format_param_value(df_display)}")
+        self.label_fs.setText(f"Частота дискретизации (N / T), {self._freq_label()}: {self._format_param_value(fs_display)}")
+        self.label_fmax.setText(f"Максимальная частота спектра (N / 2T), {self._freq_label()}: {self._format_param_value(fmax_display)}")
 
     def _frequency_bounds_defaults(self) -> tuple[Optional[float], Optional[float]]:
-        t_half, n_points = self._parse_params_input()
-        if t_half is None or n_points is None:
+        t_half_sec, n_points = self._parse_params_input()
+        if t_half_sec is None or n_points is None:
             return None, None
 
-        t_full = 2.0 * t_half
-        if t_full <= 0.0:
+        t_full_sec = 2.0 * t_half_sec
+        if t_full_sec <= 0.0:
             return None, None
 
-        f_max = n_points / (2.0 * t_full)
+        f_max_hz = n_points / (2.0 * t_full_sec)
+        f_max = self._hz_to_display_freq(f_max_hz)
         f_min = 0.0 if self.checkbox_positive_freq_only.isChecked() else -f_max
         return f_min, f_max
+
 
     def _set_frequency_limits_inputs(self, f_min: float, f_max: float):
         self.input_freq_min.blockSignals(True)
@@ -1060,7 +1239,7 @@ class MainWindow(QMainWindow):
 
         points = total_points
         if self.spectrum_freq is not None:
-            x = self.spectrum_freq
+            x = self._hz_to_display_freq(self.spectrum_freq)
             if self.checkbox_positive_freq_only.isChecked():
                 x = x[x >= 0]
 
@@ -1071,6 +1250,7 @@ class MainWindow(QMainWindow):
                 points = int(np.count_nonzero(mask))
             else:
                 points = x.size
+
 
         self.label_freq_samples_count.setText(str(points))
         self.label_freq_samples_count.setStyleSheet("color: red;" if points < 10 else "")
@@ -1165,16 +1345,82 @@ class MainWindow(QMainWindow):
 
         self._update_frequency_samples_count()
 
+    def _on_time_unit_changed(self):
+        prev_time_scale = TIME_UNIT_TO_SECONDS[self.time_unit_key]
+        new_key_data = self.combo_time_unit.currentData()
+        new_key = new_key_data if isinstance(new_key_data, str) and new_key_data in TIME_UNIT_TO_SECONDS else "s"
+        new_time_scale = TIME_UNIT_TO_SECONDS[new_key]
+
+        prev_t_half_text = self.input_t_half.text().strip()
+        prev_t_half_display = None
+        try:
+            prev_t_half_display = float(prev_t_half_text)
+        except Exception:
+            pass
+
+        prev_fmin_text = self.input_freq_min.text().strip()
+        prev_fmax_text = self.input_freq_max.text().strip()
+        prev_fmin_display = None
+        prev_fmax_display = None
+        try:
+            prev_fmin_display = float(prev_fmin_text)
+        except Exception:
+            pass
+        try:
+            prev_fmax_display = float(prev_fmax_text)
+        except Exception:
+            pass
+
+        self.time_unit_key = new_key
+        self._update_unit_labels()
+
+        if prev_t_half_display is not None:
+            t_half_sec = prev_t_half_display * prev_time_scale
+            self.input_t_half.blockSignals(True)
+            self.input_t_half.setText(self._format_param_value(t_half_sec / new_time_scale))
+            self.input_t_half.blockSignals(False)
+
+        if prev_fmin_display is not None and prev_fmax_display is not None:
+            prev_freq_scale = 1.0 / prev_time_scale
+            new_freq_scale = 1.0 / new_time_scale
+            fmin_hz = prev_fmin_display * prev_freq_scale
+            fmax_hz = prev_fmax_display * prev_freq_scale
+            self.input_freq_min.blockSignals(True)
+            self.input_freq_max.blockSignals(True)
+            self.input_freq_min.setText(self._format_param_value(fmin_hz / new_freq_scale))
+            self.input_freq_max.setText(self._format_param_value(fmax_hz / new_freq_scale))
+            self.input_freq_min.blockSignals(False)
+            self.input_freq_max.blockSignals(False)
+
+        self._on_params_changed()
+
+        if self.current_edit_index is not None and self.edit_values is not None:
+            self._plot_edit_signal()
+        if self.summed_signal is not None:
+            self._plot_sum()
+        if self.spectrum_freq is not None:
+            mode = self._current_spectrum_mode()
+            if mode is not None:
+                self._plot_spectrum_mode(mode)
+
 
     def _on_params_changed(self):
+
         self._validate_params_ui()
         self._update_fourier_params_ui()
 
-        t_half, _ = self._parse_params_input()
-        step = (2.0 * t_half) / 20.0 if t_half is not None and t_half > 0 else 0.1
-        shift_limit = 2.0 * t_half if t_half is not None else 1.0
-        self.spinbox_time_shift.setSingleStep(max(1e-6, step))
-        self.spinbox_time_shift.setRange(-shift_limit, shift_limit)
+        t_half_sec, _ = self._parse_params_input()
+        if t_half_sec is not None and t_half_sec > 0:
+            shift_limit_display = self._seconds_to_time(2.0 * t_half_sec)
+            step_display = max(1e-6, shift_limit_display / 20.0)
+        else:
+            shift_limit_display = 1.0
+            step_display = 0.1
+
+        self.label_time_shift.setText(f"Введите сдвиг в {self._time_label()}:")
+        self.spinbox_time_shift.setSingleStep(step_display)
+        self.spinbox_time_shift.setRange(-shift_limit_display, shift_limit_display)
+
 
         self._reset_frequency_limits(update_plot=False)
         self._update_buttons_state()
@@ -1498,8 +1744,10 @@ class MainWindow(QMainWindow):
             self._show_error(f"Ошибка при сканировании: {exc}")
             return
 
-        x = build_time_axis(t_half, n_points)
-        preview = PreviewDialog(x, sig_resampled, self)
+        x_sec = build_time_axis(t_half, n_points)
+        x_display = x_sec / self._time_scale()
+        preview = PreviewDialog(x_display, sig_resampled, f"t, {self._time_label()}", self)
+
         if preview.exec() != DIALOG_ACCEPTED:
             return
 
@@ -1519,7 +1767,7 @@ class MainWindow(QMainWindow):
             self._show_error("Сначала примените корректные параметры T/2 и N.")
             return
 
-        dialog = ModelSignalDialog(t_half, n_points, self)
+        dialog = ModelSignalDialog(t_half, n_points, self.time_unit_key, self)
         if dialog.exec() != DIALOG_ACCEPTED:
             return
 
@@ -1591,14 +1839,17 @@ class MainWindow(QMainWindow):
         if t_half is None or n_points is None:
             return
 
-        x = build_time_axis(t_half, len(self.edit_values))
+        x_sec = build_time_axis(t_half, len(self.edit_values))
+        x = x_sec / self._time_scale()
         color = self.signals[self.current_edit_index].color.name()
 
         self.edit_plot.ax.plot(x, self.edit_values, color=color, linewidth=1.6)
         self.edit_plot.ax.set_title(self.signals[self.current_edit_index].name)
         self.edit_plot.ax.grid(True)
-        self.edit_plot.ax.set_xlabel("t, сек")
+        self.edit_plot.ax.set_xlabel(f"t, {self._time_label()}")
+        self.edit_plot.figure.tight_layout()
         self.edit_plot.canvas.draw_idle()
+
 
     def _clear_span_selection(self):
         if hasattr(self.span_selector, "clear"):
@@ -1692,9 +1943,11 @@ class MainWindow(QMainWindow):
 
     def _parse_phase_shift(self) -> Optional[float]:
         try:
-            return float(self.spinbox_time_shift.value())
+            delta_display = float(self.spinbox_time_shift.value())
+            return self._time_to_seconds(delta_display)
         except Exception:
             return None
+
 
     def _validate_phase_shift(self):
         t_half, _ = self._parse_params()
@@ -1817,9 +2070,11 @@ class MainWindow(QMainWindow):
         if t_half is None:
             return
 
-        x = build_time_axis(t_half, len(self.edit_values))
+        x_sec = build_time_axis(t_half, len(self.edit_values))
+        x = x_sec / self._time_scale()
         i_min = int(np.searchsorted(x, min(x_min, x_max), side="left"))
         i_max = int(np.searchsorted(x, max(x_min, x_max), side="right"))
+
 
         i_min = max(0, min(i_min, len(self.edit_values)))
         i_max = max(0, min(i_max, len(self.edit_values)))
@@ -1903,7 +2158,8 @@ class MainWindow(QMainWindow):
         if t_half is None:
             return
 
-        x = build_time_axis(t_half, len(self.summed_signal))
+        x_sec = build_time_axis(t_half, len(self.summed_signal))
+        x = x_sec / self._time_scale()
 
         if self.show_components_active:
             for r in self._checked_rows():
@@ -1913,9 +2169,11 @@ class MainWindow(QMainWindow):
         self.sum_plot.ax.plot(x, self.summed_signal, color="black", linewidth=2.0, label="Сумма")
         self.sum_plot.ax.grid(True)
         self.sum_plot.ax.set_title("Суммарный сигнал")
-        self.sum_plot.ax.set_xlabel("t, сек")
+        self.sum_plot.ax.set_xlabel(f"t, {self._time_label()}")
         self.sum_plot.ax.legend(loc="best")
+        self.sum_plot.figure.tight_layout()
         self.sum_plot.canvas.draw_idle()
+
 
     def _save_sum_plot(self):
         if self.summed_signal is None:
@@ -2063,10 +2321,10 @@ class MainWindow(QMainWindow):
 
         if mode == "amp":
             y = self.spectrum_amp
-            title = "Амплитуда спектра"
+            title = "Амплитудный спектр"
         elif mode == "phase":
             y = self.spectrum_phase
-            title = "Фаза спектра"
+            title = "Фазовый спектр"
         elif mode == "real":
             y = self.spectrum_real
             title = "Действительная часть спектра"
@@ -2074,11 +2332,12 @@ class MainWindow(QMainWindow):
             y = self.spectrum_imag
             title = "Мнимая часть спектра"
 
-        x = self.spectrum_freq
+        x = self._hz_to_display_freq(self.spectrum_freq)
         if self.checkbox_positive_freq_only.isChecked():
             positive_mask = x >= 0
             x = x[positive_mask]
             y = y[positive_mask]
+
 
         f_min = self.freq_limit_min
         f_max = self.freq_limit_max
@@ -2093,16 +2352,19 @@ class MainWindow(QMainWindow):
 
         if x.size == 0:
             self.spec_plot.ax.set_title(title)
-            self.spec_plot.ax.set_xlabel("f, Гц")
+            self.spec_plot.ax.set_xlabel(f"f, {self._freq_label()}")
             self.spec_plot.ax.grid(True)
+            self.spec_plot.figure.tight_layout()
             self.spec_plot.canvas.draw_idle()
             return
 
         self.spec_plot.ax.plot(x, y, color="tab:blue", linewidth=1.3)
         self.spec_plot.ax.set_title(title)
-        self.spec_plot.ax.set_xlabel("f, Гц")
+        self.spec_plot.ax.set_xlabel(f"f, {self._freq_label()}")
         self.spec_plot.ax.grid(True)
+        self.spec_plot.figure.tight_layout()
         self.spec_plot.canvas.draw_idle()
+
 
 
 
