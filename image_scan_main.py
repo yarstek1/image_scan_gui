@@ -16,7 +16,8 @@ from skimage import io as skio
 
 try:
     from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap
+    from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap, QTextDocument
+
     from PyQt6.QtWidgets import (
 
         QAbstractItemView,
@@ -65,7 +66,8 @@ try:
     MESSAGEBOX_NO = QMessageBox.StandardButton.No
 except ImportError:
     from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QColor, QIcon, QPixmap
+    from PyQt5.QtGui import QColor, QIcon, QPixmap, QTextDocument
+
     from PyQt5.QtWidgets import (
         QAction,
 
@@ -543,10 +545,44 @@ class HelpDialog(QDialog):
         self.resize(900, 700)
 
         layout = QVBoxLayout(self)
-        viewer = QTextEdit(self)
-        viewer.setReadOnly(True)
-        viewer.setMarkdown(markdown_text)
-        layout.addWidget(viewer)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Поиск"))
+        self.input_search = QLineEdit(self)
+        search_row.addWidget(self.input_search, 1)
+        self.btn_find_next = QPushButton("Найти далее", self)
+        search_row.addWidget(self.btn_find_next)
+        self.btn_clear_search = QPushButton("Сбросить", self)
+        search_row.addWidget(self.btn_clear_search)
+        layout.addLayout(search_row)
+
+        self.viewer = QTextEdit(self)
+        self.viewer.setReadOnly(True)
+        self.viewer.setMarkdown(markdown_text)
+        layout.addWidget(self.viewer)
+
+        self.btn_find_next.clicked.connect(self._find_next)
+        self.btn_clear_search.clicked.connect(self._clear_search)
+        self.input_search.returnPressed.connect(self._find_next)
+
+    def _find_next(self):
+        text = self.input_search.text().strip()
+        if not text:
+            return
+
+        found = self.viewer.find(text)
+        if not found:
+            cursor = self.viewer.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            self.viewer.setTextCursor(cursor)
+            self.viewer.find(text)
+
+    def _clear_search(self):
+        self.input_search.clear()
+        cursor = self.viewer.textCursor()
+        cursor.clearSelection()
+        self.viewer.setTextCursor(cursor)
+
 
 
 class MainWindow(QMainWindow):
@@ -577,6 +613,11 @@ class MainWindow(QMainWindow):
         self.spectrum_real: Optional[np.ndarray] = None
         self.spectrum_imag: Optional[np.ndarray] = None
         self.spectrum_total_points: Optional[int] = None
+
+        self.ruler_active = False
+        self.ruler_point_1: Optional[tuple[float, float]] = None
+        self.ruler_point_2: Optional[tuple[float, float]] = None
+
 
         self.t_half: Optional[float] = None
         self.n_points: Optional[int] = None
@@ -773,17 +814,17 @@ class MainWindow(QMainWindow):
 
         right = QVBoxLayout()
 
-        self.btn_zero = QPushButton("Обнуление")
+        self.btn_zero = QPushButton("Обнуление шума")
         self.btn_zero.setCheckable(True)
         self.btn_zero.clicked.connect(self._toggle_zero_mode)
         right.addWidget(self.btn_zero)
 
-        self.btn_level = QPushButton("Уровень 0")
+        self.btn_level = QPushButton("Вертикальное смещение")
         self.btn_level.setCheckable(True)
         self.btn_level.clicked.connect(self._toggle_level_mode)
         right.addWidget(self.btn_level)
 
-        self.btn_phase_shift = QPushButton("Cдвиг фазы")
+        self.btn_phase_shift = QPushButton("Горизонтальное смещение")
         self.btn_phase_shift.setCheckable(True)
         self.btn_phase_shift.clicked.connect(self._toggle_phase_shift_mode)
         right.addWidget(self.btn_phase_shift)
@@ -892,10 +933,26 @@ class MainWindow(QMainWindow):
 
         root.addLayout(actions)
 
+        spectrum_opts = QHBoxLayout()
+
         self.checkbox_positive_freq_only = QCheckBox("только положительные")
         self.checkbox_positive_freq_only.setChecked(True)
         self.checkbox_positive_freq_only.toggled.connect(self._on_positive_freq_only_toggled)
-        root.addWidget(self.checkbox_positive_freq_only)
+        spectrum_opts.addWidget(self.checkbox_positive_freq_only)
+
+        self.checkbox_ruler = QCheckBox("линейка")
+        self.checkbox_ruler.setChecked(False)
+        self.checkbox_ruler.toggled.connect(self._on_ruler_toggled)
+        spectrum_opts.addWidget(self.checkbox_ruler)
+
+        self.btn_reset_ruler = QPushButton("сбросить линейку")
+        self.btn_reset_ruler.clicked.connect(self._reset_ruler)
+        self.btn_reset_ruler.hide()
+        spectrum_opts.addWidget(self.btn_reset_ruler)
+
+        spectrum_opts.addStretch(1)
+        root.addLayout(spectrum_opts)
+
 
         modes = QHBoxLayout()
 
@@ -936,8 +993,10 @@ class MainWindow(QMainWindow):
             drag_from_anywhere=True,
         )
         self.spec_span_selector.set_active(True)
+        self.spec_plot.canvas.mpl_connect("button_press_event", self._on_spectrum_click)
 
         return box
+
 
 
     def _show_error(self, text: str):
@@ -1437,8 +1496,11 @@ class MainWindow(QMainWindow):
         self.spectrum_real = None
         self.spectrum_imag = None
         self.spectrum_total_points = None
+        self.ruler_point_1 = None
+        self.ruler_point_2 = None
         self.spec_plot.clear()
         self._update_frequency_samples_count()
+
 
 
     def _apply_scan_params(self):
@@ -2281,9 +2343,96 @@ class MainWindow(QMainWindow):
     def _on_positive_freq_only_toggled(self, _checked: bool):
         self._reset_frequency_limits(update_plot=True)
 
-    def _on_spectrum_span_selected(self, x_min: float, x_max: float):
-        if self.spectrum_freq is None:
+    def _on_ruler_toggled(self, checked: bool):
+        self.ruler_active = checked
+        self.btn_reset_ruler.setVisible(checked)
+        self.spec_span_selector.set_active(not checked)
+        if not checked:
+            self.ruler_point_1 = None
+            self.ruler_point_2 = None
+
+        mode = self._current_spectrum_mode()
+        if mode is not None and self.spectrum_freq is not None:
+            self._plot_spectrum_mode(mode)
+
+    def _reset_ruler(self):
+        self.ruler_point_1 = None
+        self.ruler_point_2 = None
+
+        mode = self._current_spectrum_mode()
+        if mode is not None and self.spectrum_freq is not None:
+            self._plot_spectrum_mode(mode)
+
+    def _on_spectrum_click(self, event):
+        if not self.ruler_active or self.spectrum_freq is None:
             return
+        if event.inaxes != self.spec_plot.ax or event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        point = (float(event.xdata), float(event.ydata))
+        if self.ruler_point_1 is None:
+            self.ruler_point_1 = point
+            self.ruler_point_2 = None
+        else:
+            self.ruler_point_2 = point
+
+        mode = self._current_spectrum_mode()
+        if mode is not None:
+            self._plot_spectrum_mode(mode)
+
+    def _draw_ruler_overlay(self):
+        if not self.ruler_active or self.ruler_point_1 is None:
+            return
+
+        p1 = self.ruler_point_1
+        self.spec_plot.ax.scatter([p1[0]], [p1[1]], color="crimson", s=36, zorder=5)
+        self.spec_plot.ax.annotate(
+            f"({self._format_param_value(p1[0])}; {self._format_param_value(p1[1])})",
+            xy=p1,
+            xytext=(8, 8),
+            textcoords="offset points",
+            color="crimson",
+            fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="crimson", alpha=0.8),
+        )
+
+        if self.ruler_point_2 is None:
+            return
+
+        p2 = self.ruler_point_2
+        self.spec_plot.ax.scatter([p2[0]], [p2[1]], color="crimson", s=36, zorder=5)
+        self.spec_plot.ax.annotate(
+            f"({self._format_param_value(p2[0])}; {self._format_param_value(p2[1])})",
+            xy=p2,
+            xytext=(8, -16),
+            textcoords="offset points",
+            color="crimson",
+            fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="crimson", alpha=0.8),
+        )
+
+        self.spec_plot.ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="crimson", linewidth=1.5, linestyle="-")
+
+        delta_f = abs(p2[0] - p1[0])
+        self.spec_plot.ax.text(
+            0.98,
+            0.02,
+            f"Δ f = {self._format_param_value(delta_f)} {self._freq_label()}",
+            transform=self.spec_plot.ax.transAxes,
+            va="bottom",
+            ha="right",
+            fontsize=10,
+            color="crimson",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="crimson", alpha=0.9),
+        )
+
+
+    def _on_spectrum_span_selected(self, x_min: float, x_max: float):
+        if self.ruler_active or self.spectrum_freq is None:
+            return
+
 
         f_left = float(min(x_min, x_max))
         f_right = float(max(x_min, x_max))
@@ -2354,6 +2503,7 @@ class MainWindow(QMainWindow):
             self.spec_plot.ax.set_title(title)
             self.spec_plot.ax.set_xlabel(f"f, {self._freq_label()}")
             self.spec_plot.ax.grid(True)
+            self._draw_ruler_overlay()
             self.spec_plot.figure.tight_layout()
             self.spec_plot.canvas.draw_idle()
             return
@@ -2362,8 +2512,10 @@ class MainWindow(QMainWindow):
         self.spec_plot.ax.set_title(title)
         self.spec_plot.ax.set_xlabel(f"f, {self._freq_label()}")
         self.spec_plot.ax.grid(True)
+        self._draw_ruler_overlay()
         self.spec_plot.figure.tight_layout()
         self.spec_plot.canvas.draw_idle()
+
 
 
 
