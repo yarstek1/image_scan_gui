@@ -17,9 +17,7 @@ from skimage import io as skio
 try:
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QAction, QColor, QIcon, QPixmap, QTextDocument
-
     from PyQt6.QtWidgets import (
-
         QAbstractItemView,
         QApplication,
         QButtonGroup,
@@ -33,7 +31,6 @@ try:
         QGroupBox,
         QHBoxLayout,
         QLabel,
-
         QLineEdit,
         QMainWindow,
         QMessageBox,
@@ -41,6 +38,7 @@ try:
         QDoubleSpinBox,
         QSizePolicy,
         QSlider,
+        QStyle,
         QTableWidget,
         QTableWidgetItem,
         QTextEdit,
@@ -54,6 +52,8 @@ try:
     CHECKED = Qt.CheckState.Checked
     UNCHECKED = Qt.CheckState.Unchecked
     ORIENTATION_VERTICAL = Qt.Orientation.Vertical
+    ORIENTATION_HORIZONTAL = Qt.Orientation.Horizontal
+
     POLICY_FIXED = QSizePolicy.Policy.Fixed
     POLICY_EXPANDING = QSizePolicy.Policy.Expanding
     ITEM_USER_CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable
@@ -67,10 +67,8 @@ try:
 except ImportError:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QColor, QIcon, QPixmap, QTextDocument
-
     from PyQt5.QtWidgets import (
         QAction,
-
         QAbstractItemView,
         QApplication,
         QButtonGroup,
@@ -84,20 +82,19 @@ except ImportError:
         QGroupBox,
         QHBoxLayout,
         QLabel,
-
         QLineEdit,
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QDoubleSpinBox,
         QSizePolicy,
         QSlider,
+        QStyle,
         QTableWidget,
         QTableWidgetItem,
         QTextEdit,
         QVBoxLayout,
         QWidget,
-        #QSpinBox,
-        QDoubleSpinBox
     )
 
     os.environ.setdefault("QT_API", "pyqt5")
@@ -106,6 +103,8 @@ except ImportError:
     CHECKED = Qt.Checked
     UNCHECKED = Qt.Unchecked
     ORIENTATION_VERTICAL = Qt.Vertical
+    ORIENTATION_HORIZONTAL = Qt.Horizontal
+
     POLICY_FIXED = QSizePolicy.Fixed
     POLICY_EXPANDING = QSizePolicy.Expanding
     ITEM_USER_CHECKABLE = Qt.ItemIsUserCheckable
@@ -116,6 +115,7 @@ except ImportError:
     COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ShowAlphaChannel
     MESSAGEBOX_YES = QMessageBox.Yes
     MESSAGEBOX_NO = QMessageBox.No
+
 
 
 from matplotlib.figure import Figure
@@ -807,79 +807,103 @@ class MainWindow(QMainWindow):
 
     def _build_edit_panel(self) -> QGroupBox:
         box = QGroupBox("Редактирование")
-        root = QHBoxLayout(box)
+        root = QVBoxLayout(box)
 
         self.edit_plot = MplView()
         root.addWidget(self.edit_plot, 1)
 
-        right = QVBoxLayout()
+        toolbar = QHBoxLayout()
+        style = self.style()
 
-        self.btn_zero = QPushButton("Обнуление шума")
+        self.btn_zero = QPushButton()
+        self.btn_zero.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
+        self.btn_zero.setToolTip("Обнуление шума")
         self.btn_zero.setCheckable(True)
         self.btn_zero.clicked.connect(self._toggle_zero_mode)
-        right.addWidget(self.btn_zero)
+        toolbar.addWidget(self.btn_zero)
 
-        self.btn_level = QPushButton("Вертикальное смещение")
+        self.btn_level = QPushButton()
+        self.btn_level.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
+        self.btn_level.setToolTip("Вертикальное смещение")
         self.btn_level.setCheckable(True)
         self.btn_level.clicked.connect(self._toggle_level_mode)
-        right.addWidget(self.btn_level)
+        toolbar.addWidget(self.btn_level)
 
-        self.btn_phase_shift = QPushButton("Горизонтальное смещение")
+        self.btn_phase_shift = QPushButton()
+        self.btn_phase_shift.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
+        self.btn_phase_shift.setToolTip("Горизонтальное смещение")
         self.btn_phase_shift.setCheckable(True)
         self.btn_phase_shift.clicked.connect(self._toggle_phase_shift_mode)
-        right.addWidget(self.btn_phase_shift)
+        toolbar.addWidget(self.btn_phase_shift)
 
-        self.btn_amplify = QPushButton("Усиление")
+        self.btn_amplify = QPushButton()
+        self.btn_amplify.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
+        self.btn_amplify.setToolTip("Усиление")
         self.btn_amplify.setCheckable(True)
         self.btn_amplify.clicked.connect(self._toggle_amplify_mode)
-        right.addWidget(self.btn_amplify)
+        toolbar.addWidget(self.btn_amplify)
 
-        self.btn_undo = QPushButton("Отмена")
+        self.btn_undo = QPushButton()
+        self.btn_undo.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        self.btn_undo.setToolTip("Отмена")
         self.btn_undo.clicked.connect(self._undo_last_edit)
-        right.addWidget(self.btn_undo)
+        toolbar.addWidget(self.btn_undo)
 
-        self.btn_save = QPushButton("Сохранить")
+        self.btn_save = QPushButton()
+        self.btn_save.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.btn_save.setToolTip("Сохранить изменения сигнала")
         self.btn_save.clicked.connect(self._save_edit)
-        right.addWidget(self.btn_save)
+        toolbar.addWidget(self.btn_save)
 
-        self.level_slider = QSlider(ORIENTATION_VERTICAL)
+        self.btn_save_edit_image = QPushButton()
+        self.btn_save_edit_image.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.btn_save_edit_image.setToolTip("Сохранить изображение")
+        self.btn_save_edit_image.clicked.connect(self._save_edit_plot)
+        toolbar.addWidget(self.btn_save_edit_image)
+
+        toolbar.addStretch(1)
+        root.addLayout(toolbar)
+
+        self.controls_row = QHBoxLayout()
+
+        self.label_level = QLabel("Смещение")
+        self.controls_row.addWidget(self.label_level)
+        self.level_slider = QSlider(ORIENTATION_HORIZONTAL)
         self.level_slider.setRange(-1000, 1000)
         self.level_slider.setValue(0)
         self.level_slider.hide()
         self.level_slider.sliderPressed.connect(self._on_level_slider_pressed)
         self.level_slider.sliderReleased.connect(self._on_level_slider_released)
         self.level_slider.valueChanged.connect(self._on_level_slider_changed)
-        self.level_slider.setSizePolicy(POLICY_FIXED, POLICY_EXPANDING)
-        right.addWidget(self.level_slider, 1)
+        self.level_slider.setSizePolicy(POLICY_EXPANDING, POLICY_FIXED)
+        self.controls_row.addWidget(self.level_slider, 1)
+        self.label_level.hide()
 
+        self.label_time_shift = QLabel("Введите сдвиг в сек:")
+        self.controls_row.addWidget(self.label_time_shift)
         self.spinbox_time_shift = QDoubleSpinBox()
         self.spinbox_time_shift.setDecimals(6)
         self.spinbox_time_shift.setRange(-1.0, 1.0)
         self.spinbox_time_shift.setSingleStep(0.1)
         self.spinbox_time_shift.setValue(0.0)
-        self.label_time_shift = QLabel("Введите сдвиг в сек:")
-        right.addWidget(self.label_time_shift)
-        right.addWidget(self.spinbox_time_shift)
+        self.controls_row.addWidget(self.spinbox_time_shift)
         self.spinbox_time_shift.hide()
         self.label_time_shift.hide()
         self.spinbox_time_shift.valueChanged.connect(self._on_phase_shift_changed)
 
-
+        self.label_amplify = QLabel("Коэффициент усиления")
+        self.controls_row.addWidget(self.label_amplify)
         self.spinbox_amplify = QDoubleSpinBox()
         self.spinbox_amplify.setRange(-10.0, 10.0)
         self.spinbox_amplify.setValue(1.0)
-
         self.spinbox_amplify.setSingleStep(0.1)
-        self.label_amplify = QLabel("Выберите коэффициент усиления:")
-        right.addWidget(self.label_amplify)
-        right.addWidget(self.spinbox_amplify)
+        self.controls_row.addWidget(self.spinbox_amplify)
         self.spinbox_amplify.hide()
-        self.label_amplify.hide() 
+        self.label_amplify.hide()
         self.spinbox_amplify.valueChanged.connect(self._on_amplify_value_changed)
 
-
-        right.addStretch(1)
-        root.addLayout(right)
+        self.controls_row.addStretch(1)
+        root.addLayout(self.controls_row)
 
         self.span_selector = SpanSelector(
             self.edit_plot.ax,
@@ -893,6 +917,7 @@ class MainWindow(QMainWindow):
         self.span_selector.set_active(False)
 
         return box
+
 
     def _build_sum_panel(self) -> QGroupBox:
         box = QGroupBox("Сумма")
@@ -1012,11 +1037,13 @@ class MainWindow(QMainWindow):
     def _serialize_project(self) -> dict:
         t_half, n_points = self._parse_params()
         return {
-            "version": 1,
+            "version": 2,
+            "time_unit": self.time_unit_key,
             "t_half": t_half,
             "n_points": n_points,
             "signals": [self._signal_to_dict(sig) for sig in self.signals],
         }
+
 
     def _validate_project_payload(self, payload: object) -> bool:
         if not isinstance(payload, dict):
@@ -1030,11 +1057,15 @@ class MainWindow(QMainWindow):
 
         t_half = payload.get("t_half")
         n_points = payload.get("n_points")
+        time_unit = payload.get("time_unit")
 
+        if time_unit is None or not isinstance(time_unit, str) or time_unit not in TIME_UNIT_TO_SECONDS:
+            return False
         if t_half is None or not isinstance(t_half, (int, float)) or float(t_half) < 0:
             return False
         if n_points is None or not isinstance(n_points, int) or n_points <= 0:
             return False
+
 
         for s in signals:
             if not isinstance(s, dict):
@@ -1115,6 +1146,15 @@ class MainWindow(QMainWindow):
 
         t_half = float(payload["t_half"])
         n_points = int(payload["n_points"])
+        time_unit_key = str(payload["time_unit"])
+
+        self.time_unit_key = time_unit_key
+        idx = self.combo_time_unit.findData(time_unit_key)
+        self.combo_time_unit.blockSignals(True)
+        if idx >= 0:
+            self.combo_time_unit.setCurrentIndex(idx)
+        self.combo_time_unit.blockSignals(False)
+        self._update_unit_labels()
 
         self.t_half = t_half
         self.n_points = n_points
@@ -1125,6 +1165,7 @@ class MainWindow(QMainWindow):
         self.input_n.setText(str(n_points))
         self.input_t_half.blockSignals(False)
         self.input_n.blockSignals(False)
+
 
         self.signals.clear()
         for s in payload["signals"]:
@@ -1588,6 +1629,8 @@ class MainWindow(QMainWindow):
         self.btn_amplify.setEnabled(has_edit)
         self.btn_undo.setEnabled(len(self.undo_stack) > 0)
         self.btn_save.setEnabled(has_edit and len(self.undo_stack) > 0)
+        self.btn_save_edit_image.setEnabled(has_edit)
+
 
         has_sum = self.summed_signal is not None
         if not has_sum:
@@ -1875,7 +1918,9 @@ class MainWindow(QMainWindow):
         self.span_selector.set_active(False)
         self._clear_span_selection()
         self.level_slider.hide()
+        self.label_level.hide()
         self.level_slider.setValue(0)
+
         self.spinbox_time_shift.hide()
         self.label_time_shift.hide()
         self.spinbox_time_shift.setValue(0.0)
@@ -1954,6 +1999,8 @@ class MainWindow(QMainWindow):
             self.level_slider_active = True
             self.level_slider.setValue(0)
             self.level_slider.show()
+            self.label_level.show()
+
             self.edit_values_baseline = self.edit_values.copy() if self.edit_values is not None else None
             self.spinbox_time_shift.hide()
             self.label_time_shift.hide()
@@ -2237,7 +2284,37 @@ class MainWindow(QMainWindow):
         self.sum_plot.canvas.draw_idle()
 
 
+    def _save_edit_plot(self):
+        if self.edit_values is None:
+            self._show_error("Сначала выберите сигнал для редактирования.")
+            return
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить график редактирования",
+            "edit_signal.png",
+            "PNG files (*.png);;JPEG files (*.jpg *.jpeg);;PDF files (*.pdf);;SVG files (*.svg)",
+        )
+        if not file_path:
+            return
+
+        if not os.path.splitext(file_path)[1]:
+            if "JPEG" in selected_filter:
+                file_path += ".jpg"
+            elif "PDF" in selected_filter:
+                file_path += ".pdf"
+            elif "SVG" in selected_filter:
+                file_path += ".svg"
+            else:
+                file_path += ".png"
+
+        try:
+            self.edit_plot.figure.savefig(file_path, dpi=300, bbox_inches="tight")
+        except Exception as exc:
+            self._show_error(f"Не удалось сохранить график редактирования: {exc}")
+
     def _save_sum_plot(self):
+
         if self.summed_signal is None:
             self._show_error("Сначала сформируйте сумму сигналов.")
             return
