@@ -956,6 +956,10 @@ class MainWindow(QMainWindow):
         self.btn_save_spectrum.clicked.connect(self._save_spectrum_plot)
         actions.addWidget(self.btn_save_spectrum)
 
+        self.btn_export_spectrum_csv = QPushButton("Экспорт в CSV")
+        self.btn_export_spectrum_csv.clicked.connect(self._export_spectrum_csv)
+        actions.addWidget(self.btn_export_spectrum_csv)
+
         root.addLayout(actions)
 
         spectrum_opts = QHBoxLayout()
@@ -1649,6 +1653,8 @@ class MainWindow(QMainWindow):
         for b in [self.btn_amp, self.btn_phase, self.btn_real, self.btn_imag]:
             b.setEnabled(spectrum_ready)
         self.btn_save_spectrum.setEnabled(spectrum_ready)
+        self.btn_export_spectrum_csv.setEnabled(spectrum_ready)
+
 
     def _update_show_components_button_style(self):
         if self.show_components_active and self.summed_signal is not None:
@@ -2406,7 +2412,51 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_error(f"Не удалось сохранить спектр: {exc}")
 
+    def _export_spectrum_csv(self):
+        if any(values is None for values in (
+            self.spectrum_freq,
+            self.spectrum_amp,
+            self.spectrum_phase,
+            self.spectrum_real,
+            self.spectrum_imag,
+        )):
+            self._show_error("Сначала рассчитайте спектр.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт спектра в CSV",
+            "spectrum.csv",
+            "CSV files (*.csv)",
+        )
+        if not file_path:
+            return
+
+        if not file_path.lower().endswith(".csv"):
+            file_path += ".csv"
+
+        data = np.column_stack((
+            self._hz_to_display_freq(self.spectrum_freq),
+            self.spectrum_amp,
+            self.spectrum_phase,
+            self.spectrum_real,
+            self.spectrum_imag,
+        ))
+        header = ",".join((
+            f"Частота, {self._freq_label()}",
+            "Амплитуда",
+            "Фаза, рад",
+            "Действительная часть",
+            "Мнимая часть",
+        ))
+
+        try:
+            np.savetxt(file_path, data, delimiter=";", header=header, comments="", encoding="utf-8")
+        except Exception as exc:
+            self._show_error(f"Не удалось экспортировать спектр в CSV: {exc}")
+
     def _current_spectrum_mode(self) -> Optional[str]:
+
         if self.btn_amp.isChecked():
             return "amp"
         if self.btn_phase.isChecked():
