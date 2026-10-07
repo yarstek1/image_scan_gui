@@ -2443,9 +2443,9 @@ class MainWindow(QMainWindow):
             self.spectrum_imag,
         ))
         header = ",".join((
-            f"Частота, {self._freq_label()}",
+            "Частота",
             "Амплитуда",
-            "Фаза, рад",
+            "Фаза",
             "Действительная часть",
             "Мнимая часть",
         ))
