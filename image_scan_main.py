@@ -883,7 +883,7 @@ class MainWindow(QMainWindow):
         self.controls_row.addWidget(self.label_time_shift)
         self.spinbox_time_shift = QDoubleSpinBox()
         self.spinbox_time_shift.setDecimals(6)
-        self.spinbox_time_shift.setRange(-1.0, 1.0)
+        self.spinbox_time_shift.setRange(-1e100, 1e100)
         self.spinbox_time_shift.setSingleStep(0.1)
         self.spinbox_time_shift.setValue(0.0)
         self.controls_row.addWidget(self.spinbox_time_shift)
@@ -1515,15 +1515,13 @@ class MainWindow(QMainWindow):
 
         t_half_sec, _ = self._parse_params_input()
         if t_half_sec is not None and t_half_sec > 0:
-            shift_limit_display = self._seconds_to_time(2.0 * t_half_sec)
-            step_display = max(1e-6, shift_limit_display / 20.0)
+            step_display = max(1e-6, self._seconds_to_time(2.0 * t_half_sec) / 20.0)
         else:
-            shift_limit_display = 1.0
             step_display = 0.1
 
         self.label_time_shift.setText(f"Введите сдвиг в {self._time_label()}:")
         self.spinbox_time_shift.setSingleStep(step_display)
-        self.spinbox_time_shift.setRange(-shift_limit_display, shift_limit_display)
+        self.spinbox_time_shift.setRange(-1e100, 1e100)
 
 
         self._reset_frequency_limits(update_plot=False)
