@@ -64,6 +64,8 @@ try:
     COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ColorDialogOption.ShowAlphaChannel
     MESSAGEBOX_YES = QMessageBox.StandardButton.Yes
     MESSAGEBOX_NO = QMessageBox.StandardButton.No
+    SEL_BEHAVIOR_ROWS = QAbstractItemView.SelectionBehavior.SelectRows
+    SEL_MODE_SINGLE = QAbstractItemView.SelectionMode.SingleSelection
 except ImportError:
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QColor, QIcon, QPixmap, QTextDocument
@@ -115,6 +117,8 @@ except ImportError:
     COLOR_DIALOG_SHOW_ALPHA = QColorDialog.ShowAlphaChannel
     MESSAGEBOX_YES = QMessageBox.Yes
     MESSAGEBOX_NO = QMessageBox.No
+    SEL_BEHAVIOR_ROWS = QAbstractItemView.SelectRows
+    SEL_MODE_SINGLE = QAbstractItemView.SingleSelection
 
 
 
@@ -680,6 +684,14 @@ class MainWindow(QMainWindow):
         file_menu.addAction(action_save_as)
         file_menu.addAction(action_open)
 
+        spectrum_menu = menu_bar.addMenu("Спектр")
+        self.action_save_spectrum = QAction("Сохранить спектр", self)
+        self.action_export_spectrum_csv = QAction("Экспорт в CSV", self)
+        self.action_save_spectrum.triggered.connect(self._save_spectrum_plot)
+        self.action_export_spectrum_csv.triggered.connect(self._export_spectrum_csv)
+        spectrum_menu.addAction(self.action_save_spectrum)
+        spectrum_menu.addAction(self.action_export_spectrum_csv)
+
         help_menu = menu_bar.addMenu("Справка")
         action_show_help = QAction("Открыть документацию", self)
         action_show_help.triggered.connect(self._show_help)
@@ -791,8 +803,8 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Выбор", "Название", "Цвет", "Удалить", "Копировать"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionBehavior(SEL_BEHAVIOR_ROWS)
+        self.table.setSelectionMode(SEL_MODE_SINGLE)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self.table.itemChanged.connect(self._on_table_item_changed)
         self.table.cellClicked.connect(self._on_table_cell_clicked)
@@ -946,23 +958,12 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Спектр")
         root = QVBoxLayout(box)
 
-        actions = QHBoxLayout()
+        spectrum_opts = QHBoxLayout()
 
         self.btn_calc_spec = QPushButton("Рассчитать спектр")
         self.btn_calc_spec.clicked.connect(self._calculate_spectrum)
-        actions.addWidget(self.btn_calc_spec)
+        spectrum_opts.addWidget(self.btn_calc_spec)
 
-        self.btn_save_spectrum = QPushButton("Сохранить спектр")
-        self.btn_save_spectrum.clicked.connect(self._save_spectrum_plot)
-        actions.addWidget(self.btn_save_spectrum)
-
-        self.btn_export_spectrum_csv = QPushButton("Экспорт в CSV")
-        self.btn_export_spectrum_csv.clicked.connect(self._export_spectrum_csv)
-        actions.addWidget(self.btn_export_spectrum_csv)
-
-        root.addLayout(actions)
-
-        spectrum_opts = QHBoxLayout()
 
         self.checkbox_positive_freq_only = QCheckBox("только положительные")
         self.checkbox_positive_freq_only.setChecked(True)
@@ -1650,8 +1651,8 @@ class MainWindow(QMainWindow):
 
         for b in [self.btn_amp, self.btn_phase, self.btn_real, self.btn_imag]:
             b.setEnabled(spectrum_ready)
-        self.btn_save_spectrum.setEnabled(spectrum_ready)
-        self.btn_export_spectrum_csv.setEnabled(spectrum_ready)
+        self.action_save_spectrum.setEnabled(spectrum_ready)
+        self.action_export_spectrum_csv.setEnabled(spectrum_ready)
 
 
     def _update_show_components_button_style(self):
